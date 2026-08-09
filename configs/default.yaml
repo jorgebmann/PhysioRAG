@@ -1,0 +1,65 @@
+# PhysioRAG default configuration (local / air-gapped)
+# NOTE: Never put credentials in this file. PhysioNet auth is read from the
+# environment variables PHYSIONET_USERNAME and PHYSIONET_PASSWORD (see .env.example).
+
+data:
+  raw_dir: data/raw
+  interim_dir: data/interim
+  processed_dir: data/processed
+  demo_dir: data/demo
+
+physionet:
+  # Credentialed database slug on physionet.org (requires accepting the DUA).
+  database: mimic4wdb
+  # Local mirror subdirectory under data.raw_dir.
+  mirror_subdir: mimic4wdb
+  # Default bounded subset of records (subject/record paths under waves/).
+  default_records:
+    - p100/p10014354/81739927
+    - p100/p10039708/83411188
+    - p100/p10039708/85583557
+
+ingestion:
+  dataset: mimic_wdb  # mimic_wdb (real WFDB) | mimic_demo (synthetic)
+  modality: ventilator  # ventilator | spo2 | ecg
+  window_seconds: 10.0
+  target_sample_rate_hz: 125
+  overlap_seconds: 0.0
+  max_epochs_per_record: 20  # cap epochs per record to keep the demo bounded
+
+embeddings:
+  encoder: baseline_cnn  # baseline_cnn | chronos | ...
+  embedding_dim: 128
+  device: cpu
+  batch_size: 16
+  # Local text encoder for cross-modal (text) named vector.
+  text_encoder_enabled: true
+  text_encoder: sentence-transformers/all-MiniLM-L6-v2
+  text_embedding_dim: 384
+
+quantization:
+  enabled: true
+  # pyturboquant settings — tune once a concrete codec is chosen
+  bits: 8
+
+storage:
+  backend: weaviate  # memory | weaviate
+  array_dir: data/processed/arrays
+  weaviate_url: http://127.0.0.1:8080
+  weaviate_grpc_port: 50051
+  skip_init_checks: false
+  collection: WaveformEpochV2
+
+retrieval:
+  top_k: 5
+
+synthesis:
+  backend: ollama  # ollama | llama_cpp
+  model: llama3.1
+  base_url: http://127.0.0.1:11434
+  temperature: 0.2
+  enabled: true
+
+api:
+  host: 127.0.0.1
+  port: 8000
