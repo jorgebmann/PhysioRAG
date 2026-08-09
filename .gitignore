@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# PhysioRAG local data (keep demo fixtures if added under data/demo intentionally)
+data/raw/
+data/interim/
+data/processed/
+*.npy
+*.npz
