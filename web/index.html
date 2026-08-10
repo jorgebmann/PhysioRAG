@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PhysioRAG — Semantic Search over ICU Waveforms</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="app__header">
+      <div class="brand">
+        <span class="brand__icon">🫀</span>
+        <div>
+          <h1>PhysioRAG</h1>
+          <p class="tagline">Offline, multi-modal semantic search over ICU waveforms</p>
+        </div>
+      </div>
+      <div class="health" id="health">
+        <span class="dot dot--pending" id="health-store"></span> Vector store
+        <span class="dot dot--pending" id="health-llm"></span> Local LLM
+      </div>
+    </header>
+
+    <section class="search">
+      <form id="search-form">
+        <input
+          id="query"
+          type="text"
+          autocomplete="off"
+          placeholder="z. B. Patienten mit ARDS, die spontan gegen das Beatmungsgerät atmen und dadurch einen Druckanstieg verursachen"
+        />
+        <select id="modality">
+          <option value="">All modalities</option>
+          <option value="ventilator">Ventilator</option>
+          <option value="spo2">SpO2</option>
+          <option value="ecg">ECG</option>
+        </select>
+        <select id="top_k">
+          <option value="3">Top 3</option>
+          <option value="5" selected>Top 5</option>
+          <option value="10">Top 10</option>
+        </select>
+        <button type="submit" id="search-btn">Search</button>
+      </form>
+      <div class="examples" id="examples"></div>
+    </section>
+
+    <section id="answer-section" class="answer" hidden>
+      <div class="answer__heading">
+        <h2>Synthesized answer</h2>
+        <span id="answer-timer" class="timer" hidden></span>
+      </div>
+      <p id="answer-text"></p>
+      <div id="answer-sources" class="sources"></div>
+    </section>
+
+    <section id="status" class="status" hidden></section>
+
+    <section id="results" class="results"></section>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

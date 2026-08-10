@@ -14,7 +14,9 @@ SYSTEM_PROMPT = (
     "Answer ONLY from the provided retrieved waveform epochs (their text and "
     "metadata). Cite the epoch ids you used. If the context is empty or does not "
     "support an answer, say you found no matching evidence. Do not invent data. "
-    "This is a research prototype, not for clinical decision-making."
+    "This is a research prototype, not for clinical decision-making. "
+    "Always reply in the same language as the user's question, regardless of "
+    "the language used in the retrieved epoch text or metadata."
 )
 
 
@@ -71,7 +73,8 @@ class OllamaLLM(LocalLLM):
         prompt = (
             f"Question: {query}\n\n"
             f"Retrieved waveform epochs:\n{self._context(records)}\n\n"
-            "Write a concise answer grounded in the epochs above and cite epoch ids."
+            "Write a concise answer grounded in the epochs above and cite epoch ids. "
+            "Respond in the same language as the question above."
         )
         payload: dict[str, Any] = {
             "model": self.model,

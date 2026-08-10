@@ -48,7 +48,10 @@ storage:
   weaviate_url: http://127.0.0.1:8080
   weaviate_grpc_port: 50051
   skip_init_checks: false
-  collection: WaveformEpochV2
+  # Dedicated collection for the curated mimic_demo scenarios so they never
+  # get drowned out by the much larger real mimic_wdb ingestion (which can
+  # have 10-20x more, semantically generic, epochs per record).
+  collection: WaveformEpochDemo
 
 retrieval:
   top_k: 5
