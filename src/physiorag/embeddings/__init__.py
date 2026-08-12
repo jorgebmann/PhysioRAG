@@ -2,7 +2,12 @@
 
 from physiorag.embeddings.base import TimeSeriesEncoder
 from physiorag.embeddings.baseline_cnn import BaselineCNNEncoder
-from physiorag.embeddings.quantization import QuantizedEmbedding, quantize_embeddings
+from physiorag.embeddings.quantization import (
+    QuantizedEmbedding,
+    has_pyturboquant_core,
+    is_real_quant_codec,
+    quantize_embeddings,
+)
 from physiorag.embeddings.text_encoder import TextEncoder
 
 __all__ = [
@@ -10,5 +15,7 @@ __all__ = [
     "BaselineCNNEncoder",
     "TextEncoder",
     "QuantizedEmbedding",
+    "has_pyturboquant_core",
+    "is_real_quant_codec",
     "quantize_embeddings",
 ]

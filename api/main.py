@@ -14,6 +14,9 @@ from pydantic import BaseModel, Field
 
 from physiorag import __version__
 from physiorag.config import load_config
+from physiorag.embeddings.quantization import has_pyturboquant_core
+from physiorag.retrieval.search import Retriever
+from physiorag.runtime import is_strict
 from physiorag.storage.array_store import ArrayStore
 from physiorag.storage.factory import build_vector_store
 
@@ -21,7 +24,17 @@ from physiorag.storage.factory import build_vector_store
 _state: dict[str, Any] = {}
 
 
-def _build_text_encoder(config: dict[str, Any]) -> Any | None:
+def _build_store(config: dict[str, Any]) -> Any:
+    try:
+        return build_vector_store(config)
+    except Exception as exc:
+        raise RuntimeError(
+            f"[api] failed to initialize vector store ({type(exc).__name__}: {exc}). "
+            "Is the backend (e.g. Weaviate) running and reachable?"
+        ) from exc
+
+
+def _build_text_encoder(config: dict[str, Any], *, strict: bool) -> Any | None:
     emb = config.get("embeddings", {})
     if not emb.get("text_encoder_enabled", True):
         return None
@@ -36,28 +49,52 @@ def _build_text_encoder(config: dict[str, Any]) -> Any | None:
         encoder.encode_one("warmup")  # force model load now so /search is fast
         return encoder
     except Exception as exc:  # pragma: no cover - depends on local model cache
-        print(f"[api] text encoder disabled ({type(exc).__name__}: {exc}); keyword search")
+        detail = f"{type(exc).__name__}: {exc}"
+        if strict:
+            raise RuntimeError(
+                f"[api] strict mode: text encoder failed to load ({detail}). "
+                "Pre-cache the model (see README air-gapped install) or set "
+                "embeddings.text_encoder_enabled: false."
+            ) from exc
+        print(f"[api] text encoder disabled ({detail}); keyword search")
         return None
 
 
-def _build_llm(config: dict[str, Any]) -> Any | None:
+def _build_llm(config: dict[str, Any], *, strict: bool) -> Any | None:
+    syn = config.get("synthesis", {})
+    enabled = bool(syn.get("enabled", True))
     try:
         from physiorag.synthesis.ollama import build_llm
 
-        return build_llm(config)
+        llm = build_llm(config)
     except Exception as exc:  # pragma: no cover
-        print(f"[api] synthesis disabled ({type(exc).__name__}: {exc})")
+        detail = f"{type(exc).__name__}: {exc}"
+        if strict and enabled:
+            raise RuntimeError(f"[api] strict mode: synthesis failed to initialize ({detail}).") from exc
+        print(f"[api] synthesis disabled ({detail})")
         return None
+    if strict and enabled and (llm is None or not llm.health()):
+        base_url = syn.get("base_url", "http://127.0.0.1:11434")
+        raise RuntimeError(
+            f"[api] strict mode: Ollama is not healthy at {base_url}. "
+            "Start Ollama and pull the model, or set synthesis.enabled: false."
+        )
+    return llm
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     config = load_config()
+    strict = is_strict(config)
     _state["config"] = config
-    _state["store"] = build_vector_store(config)
+    _state["strict"] = strict
+    store = _build_store(config)
+    _state["store"] = store
     _state["arrays"] = ArrayStore(config.get("storage", {}).get("array_dir", "data/processed/arrays"))
-    _state["text_encoder"] = _build_text_encoder(config)
-    _state["llm"] = _build_llm(config)
+    text_encoder = _build_text_encoder(config, strict=strict)
+    _state["text_encoder"] = text_encoder
+    _state["llm"] = _build_llm(config, strict=strict)
+    _state["retriever"] = Retriever(store, text_encoder=text_encoder)
     try:
         yield
     finally:
@@ -111,33 +148,61 @@ class WaveformResponse(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    config = _state.get("config", {})
+    emb = config.get("embeddings", {})
+    syn = config.get("synthesis", {})
+    storage = config.get("storage", {})
+    quant = config.get("quantization", {})
+
     llm = _state.get("llm")
+    store = _state.get("store")
+    text_ok = _state.get("text_encoder") is not None
+    llm_ok = bool(llm and llm.health()) if llm else False
+    store_ok = bool(store and store.health()) if store is not None else False
+    quant_ok = has_pyturboquant_core()
+
+    text_enabled = bool(emb.get("text_encoder_enabled", True))
+    syn_enabled = bool(syn.get("enabled", True))
+    quant_enabled = bool(quant.get("enabled", True))
+    strict = bool(_state.get("strict", False))
+    # "degraded" when an enabled runtime component is missing. Quant absence
+    # only degrades under strict mode (non-strict may use float16_stub).
+    degraded = (
+        (text_enabled and not text_ok)
+        or (syn_enabled and not llm_ok)
+        or (not store_ok)
+        or (strict and quant_enabled and not quant_ok)
+    )
+
     return {
-        "status": "ok",
+        "status": "degraded" if degraded else "ok",
         "version": __version__,
-        "text_encoder": _state.get("text_encoder") is not None,
-        "llm": bool(llm and llm.health()) if llm else False,
+        "text_encoder": text_ok,
+        "llm": llm_ok,
+        "store": storage.get("backend", "memory"),
+        "store_ok": store_ok,
+        "collection": storage.get("collection"),
+        "quant_available": quant_ok,
+        "strict": strict,
     }
 
 
 @app.post("/search", response_model=SearchResponse)
 def search(request: SearchRequest) -> SearchResponse:
     """Cross-modal search: NL query -> text vector (hybrid) over waveform epochs."""
-    store = _state.get("store")
-    if store is None:
-        raise HTTPException(status_code=503, detail="Vector store not initialized")
-    if not hasattr(store, "search_text"):
-        raise HTTPException(status_code=501, detail="Store does not support text search")
+    retriever = _state.get("retriever")
+    if retriever is None:
+        raise HTTPException(status_code=503, detail="Retriever not initialized")
 
     filters = {"modality": request.modality} if request.modality else None
-    text_encoder = _state.get("text_encoder")
-    query_embedding = text_encoder.encode_one(request.query) if text_encoder else None
-    records = store.search_text(
-        request.query,
-        top_k=request.top_k,
-        filters=filters,
-        query_embedding=query_embedding,
-    )
+    try:
+        records = retriever.search_text(
+            request.query,
+            top_k=request.top_k,
+            filters=filters,
+        )
+    except NotImplementedError:
+        raise HTTPException(status_code=501, detail="Store does not support text search")
 
     hits = [
         SearchHit(
@@ -155,12 +220,26 @@ def search(request: SearchRequest) -> SearchResponse:
     answer: str | None = None
     sources: list[str] = []
     llm = _state.get("llm")
-    if request.synthesize and llm is not None and llm.health():
-        try:
-            result = llm.synthesize(request.query, records)
-            answer, sources = result.answer, result.sources
-        except Exception as exc:  # pragma: no cover
-            print(f"[api] synthesis failed ({type(exc).__name__}: {exc})")
+    strict = bool(_state.get("strict", False))
+    if request.synthesize:
+        if llm is None or not llm.health():
+            if strict:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Strict mode: synthesis requested but Ollama is unavailable.",
+                )
+        else:
+            try:
+                result = llm.synthesize(request.query, records)
+                answer, sources = result.answer, result.sources
+            except Exception as exc:  # pragma: no cover
+                detail = f"{type(exc).__name__}: {exc}"
+                if strict:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Strict mode: synthesis failed ({detail}).",
+                    ) from exc
+                print(f"[api] synthesis failed ({detail})")
 
     return SearchResponse(query=request.query, hits=hits, answer=answer, sources=sources)
 
