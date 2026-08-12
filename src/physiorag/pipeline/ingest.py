@@ -8,14 +8,17 @@ from typing import Any, Iterator
 
 import numpy as np
 
-from physiorag.embeddings.baseline_cnn import BaselineCNNEncoder
-from physiorag.embeddings.quantization import quantize_embeddings
+from physiorag.embeddings.factory import build_encoder
+from physiorag.embeddings.quantization import is_real_quant_codec, quantize_embeddings
 from physiorag.ingestion.base import WaveformEpoch, WaveformProcessor
 from physiorag.ingestion.demo_processor import DemoWaveformProcessor
 from physiorag.ingestion.wfdb_processor import WfdbWaveformProcessor
+from physiorag.runtime import is_strict
 from physiorag.storage.array_store import ArrayStore
 from physiorag.storage.base import StoredRecord, VectorStore
 from physiorag.storage.factory import build_vector_store
+
+DEMO_COLLECTION = "WaveformEpochDemo"
 
 
 def _resolve_source(dataset: str, config: dict[str, Any]) -> Path:
@@ -47,18 +50,7 @@ def _build_processor(dataset: str, modality: str, config: dict[str, Any]) -> Wav
     )
 
 
-def _build_encoder(config: dict[str, Any]) -> BaselineCNNEncoder:
-    emb = config.get("embeddings", {})
-    name = emb.get("encoder", "baseline_cnn")
-    if name != "baseline_cnn":
-        raise ValueError(f"Unsupported encoder '{name}' in baseline ingest path")
-    return BaselineCNNEncoder(
-        embedding_dim=int(emb.get("embedding_dim", 128)),
-        device=str(emb.get("device", "cpu")),
-    )
-
-
-def _maybe_build_text_encoder(config: dict[str, Any]) -> Any | None:
+def _maybe_build_text_encoder(config: dict[str, Any], *, strict: bool) -> Any | None:
     emb = config.get("embeddings", {})
     if not emb.get("text_encoder_enabled", True):
         return None
@@ -71,7 +63,14 @@ def _maybe_build_text_encoder(config: dict[str, Any]) -> Any | None:
             embedding_dim=int(emb.get("text_embedding_dim", 384)),
         )
     except Exception as exc:  # pragma: no cover - depends on local model cache
-        print(f"[ingest] text encoder disabled ({type(exc).__name__}: {exc}); waveform-only")
+        detail = f"{type(exc).__name__}: {exc}"
+        if strict:
+            raise RuntimeError(
+                f"[ingest] strict mode: text encoder failed to load ({detail}). "
+                "Pre-cache the model (see README air-gapped install) or set "
+                "embeddings.text_encoder_enabled: false."
+            ) from exc
+        print(f"[ingest] text encoder disabled ({detail}); waveform-only")
         return None
 
 
@@ -92,6 +91,44 @@ def _epoch_text(epoch: WaveformEpoch) -> str | None:
     return epoch.metadata.get("text") or epoch.metadata.get("label")
 
 
+def _accumulate_quant_stats(
+    totals: dict[str, float],
+    *,
+    n_vectors: int,
+    meta: dict[str, Any] | None,
+) -> None:
+    if not meta:
+        return
+    totals["batches"] += 1
+    totals["vectors"] += n_vectors
+    totals["original_bytes"] += float(meta.get("original_bytes", 0) or 0)
+    totals["compressed_bytes"] += float(meta.get("compressed_bytes", 0) or 0)
+    # Weighted by vectors in the batch for running means.
+    totals["_cosine_sum"] += float(meta.get("mean_cosine", 0.0) or 0.0) * n_vectors
+    totals["_mse_sum"] += float(meta.get("mse", 0.0) or 0.0) * n_vectors
+
+
+def _finalize_quant_stats(totals: dict[str, float], codec: str | None) -> dict[str, Any] | None:
+    if not totals["vectors"]:
+        return None
+    n = totals["vectors"]
+    original = int(totals["original_bytes"])
+    compressed = int(totals["compressed_bytes"])
+    ratio = (original / compressed) if compressed else 0.0
+    return {
+        "codec": codec,
+        "vectors": int(n),
+        "original_bytes": original,
+        "compressed_bytes": compressed,
+        "compression_ratio": round(ratio, 3),
+        "mean_cosine": round(totals["_cosine_sum"] / n, 6),
+        "mse": totals["_mse_sum"] / n,
+        "stored_as": "float32_reconstruction"
+        if is_real_quant_codec(codec)
+        else ("float16_stub" if codec == "float16_stub" else "float32"),
+    }
+
+
 def run_ingest(
     *,
     dataset: str = "mimic_wdb",
@@ -99,20 +136,25 @@ def run_ingest(
     config: dict[str, Any] | None = None,
     store: VectorStore | None = None,
     text_encoder: Any | None = None,
+    strict: bool | None = None,
+    reset_collection: bool = False,
 ) -> dict[str, Any]:
     """Run waveform ingestion into local array + vector storage."""
     from physiorag.config import load_config
 
     cfg = config if config is not None else load_config()
+    strict_mode = is_strict(cfg, override=strict)
     source = _resolve_source(dataset, cfg)
     processor = _build_processor(dataset, modality, cfg)
-    encoder = _build_encoder(cfg)
+    encoder = build_encoder(cfg)
     if text_encoder is None:
-        text_encoder = _maybe_build_text_encoder(cfg)
+        text_encoder = _maybe_build_text_encoder(cfg, strict=strict_mode)
     array_dir = Path(cfg.get("storage", {}).get("array_dir", "data/processed/arrays"))
     arrays = ArrayStore(array_dir)
     owns_store = store is None
     vector_store = store if store is not None else build_vector_store(cfg)
+    if reset_collection and hasattr(vector_store, "reset_schema"):
+        vector_store.reset_schema()  # type: ignore[attr-defined]
 
     batch_size = int(cfg.get("embeddings", {}).get("batch_size", 16))
     quant_cfg = cfg.get("quantization", {})
@@ -122,12 +164,30 @@ def run_ingest(
     epochs_written = 0
     codec: str | None = None
     text_vectors_written = 0
+    quant_totals: dict[str, float] = {
+        "batches": 0,
+        "vectors": 0,
+        "original_bytes": 0,
+        "compressed_bytes": 0,
+        "_cosine_sum": 0.0,
+        "_mse_sum": 0.0,
+    }
     try:
         for batch in _batched(processor.iter_epochs(source), batch_size):
             dense = encoder.encode(batch)
             if quant_enabled:
                 quantized = quantize_embeddings(dense, bits=quant_bits)
                 codec = quantized.codec
+                if strict_mode and not is_real_quant_codec(codec):
+                    raise RuntimeError(
+                        f"[ingest] strict mode: quantization codec is '{codec}', not a real "
+                        "TurboQuant backend. Install with "
+                        'pip install ".[quant]" (pyturboquant>=0.1.1 provides pyturboquant.core) '
+                        "or set quantization.enabled: false."
+                    )
+                _accumulate_quant_stats(
+                    quant_totals, n_vectors=dense.shape[0], meta=quantized.metadata
+                )
                 vectors = np.asarray(quantized.data, dtype=np.float32)
             else:
                 vectors = dense
@@ -170,6 +230,8 @@ def run_ingest(
         if owns_store and hasattr(vector_store, "close"):
             vector_store.close()  # type: ignore[attr-defined]
 
+    storage_cfg = cfg.get("storage", {})
+    quant_stats = _finalize_quant_stats(quant_totals, codec)
     return {
         "status": "ok",
         "dataset": dataset,
@@ -177,10 +239,45 @@ def run_ingest(
         "source": str(source),
         "epochs_written": epochs_written,
         "text_vectors_written": text_vectors_written,
+        "text_encoder": text_encoder is not None,
         "array_dir": str(array_dir),
         "quant_codec": codec,
-        "storage_backend": cfg.get("storage", {}).get("backend", "memory"),
+        "quant_stats": quant_stats,
+        "storage_backend": storage_cfg.get("backend", "memory"),
+        "collection": storage_cfg.get("collection"),
+        "strict": strict_mode,
     }
+
+
+def _format_summary(result: dict[str, Any]) -> str:
+    keys = [
+        "dataset",
+        "modality",
+        "source",
+        "epochs_written",
+        "text_vectors_written",
+        "text_encoder",
+        "quant_codec",
+        "storage_backend",
+        "collection",
+        "strict",
+    ]
+    lines = ["PhysioRAG ingest complete:"]
+    lines.extend(f"  {key}: {result.get(key)}" for key in keys)
+    stats = result.get("quant_stats")
+    if isinstance(stats, dict):
+        lines.append("  quant_stats:")
+        for key in (
+            "original_bytes",
+            "compressed_bytes",
+            "compression_ratio",
+            "mean_cosine",
+            "mse",
+            "stored_as",
+        ):
+            if key in stats:
+                lines.append(f"    {key}: {stats[key]}")
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -192,13 +289,38 @@ def main(argv: list[str] | None = None) -> None:
         choices=["ventilator", "spo2", "ecg"],
     )
     parser.add_argument("--config", default=None, help="Path to YAML config")
+    parser.add_argument(
+        "--strict",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Fail loudly if text encoder / vector store / pyturboquant are unavailable "
+        "(overrides runtime.strict and PHYSIORAG_STRICT).",
+    )
+    parser.add_argument(
+        "--reset-collection",
+        action="store_true",
+        help="Drop and recreate the vector store collection before ingesting "
+        "(use when embedding dims change).",
+    )
     args = parser.parse_args(argv)
 
     from physiorag.config import load_config
 
     cfg = load_config(args.config)
-    result = run_ingest(dataset=args.dataset, modality=args.modality, config=cfg)
-    print(result)
+    # Keep curated demo scenarios in their own collection so they never share
+    # an index with the larger mimic_wdb corpus (default is WaveformEpochV2).
+    if args.dataset == "mimic_demo":
+        storage = cfg.setdefault("storage", {})
+        if storage.get("collection") in {None, "", "WaveformEpochV2"}:
+            storage["collection"] = DEMO_COLLECTION
+    result = run_ingest(
+        dataset=args.dataset,
+        modality=args.modality,
+        config=cfg,
+        strict=args.strict,
+        reset_collection=args.reset_collection,
+    )
+    print(_format_summary(result))
 
 
 if __name__ == "__main__":
