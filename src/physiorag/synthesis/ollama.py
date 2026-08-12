@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Sequence
 
 import httpx
@@ -18,6 +19,17 @@ SYSTEM_PROMPT = (
     "Always reply in the same language as the user's question, regardless of "
     "the language used in the retrieved epoch text or metadata."
 )
+
+
+def cited_epoch_ids(answer: str, candidates: Sequence[str]) -> list[str]:
+    """Return candidate epoch ids that appear as substrings in ``answer`` (stable order)."""
+    if not answer or not candidates:
+        return []
+    cited: list[str] = []
+    for epoch_id in candidates:
+        if epoch_id and re.search(re.escape(epoch_id), answer):
+            cited.append(epoch_id)
+    return cited
 
 
 class OllamaLLM(LocalLLM):
@@ -64,7 +76,7 @@ class OllamaLLM(LocalLLM):
         *,
         temperature: float | None = None,
     ) -> SynthesisResult:
-        sources = [r.epoch_id for r in records]
+        candidates = [r.epoch_id for r in records]
         if not records:
             return SynthesisResult(
                 answer="No matching waveform evidence was found for this query.",
@@ -90,8 +102,10 @@ class OllamaLLM(LocalLLM):
         )
         resp.raise_for_status()
         data = resp.json()
+        answer = str(data.get("response", "")).strip()
+        sources = cited_epoch_ids(answer, candidates)
         return SynthesisResult(
-            answer=str(data.get("response", "")).strip(),
+            answer=answer,
             sources=sources,
             raw=data,
         )
