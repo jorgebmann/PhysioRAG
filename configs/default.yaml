@@ -2,6 +2,13 @@
 # NOTE: Never put credentials in this file. PhysioNet auth is read from the
 # environment variables PHYSIONET_USERNAME and PHYSIONET_PASSWORD (see .env.example).
 
+runtime:
+  # Strict mode fails loudly when a required component (text encoder, vector
+  # store, Ollama synthesis, or real pyturboquant compression) is unavailable,
+  # instead of silently degrading. Used by the Phase A demo / air-gap smoke run.
+  # Override per-run with PHYSIORAG_STRICT=1 or the ingest --strict flag.
+  strict: false
+
 data:
   raw_dir: data/raw
   interim_dir: data/interim
@@ -28,7 +35,7 @@ ingestion:
   max_epochs_per_record: 20  # cap epochs per record to keep the demo bounded
 
 embeddings:
-  encoder: baseline_cnn  # baseline_cnn | chronos | ...
+  encoder: baseline_cnn  # baseline_cnn (only signal encoder implemented today)
   embedding_dim: 128
   device: cpu
   batch_size: 16
@@ -48,16 +55,16 @@ storage:
   weaviate_url: http://127.0.0.1:8080
   weaviate_grpc_port: 50051
   skip_init_checks: false
-  # Dedicated collection for the curated mimic_demo scenarios so they never
-  # get drowned out by the much larger real mimic_wdb ingestion (which can
-  # have 10-20x more, semantically generic, epochs per record).
-  collection: WaveformEpochDemo
+  # Default collection for real / bounded WFDB ingest. The Phase A smoke demo
+  # overrides this to WaveformEpochDemo so curated scenarios are not drowned
+  # out by larger mimic_wdb indexes (and so WFDB ingest never lands in Demo).
+  collection: WaveformEpochV2
 
 retrieval:
   top_k: 5
 
 synthesis:
-  backend: ollama  # ollama | llama_cpp
+  backend: ollama  # ollama (only synthesis backend implemented today)
   model: llama3.1
   base_url: http://127.0.0.1:11434
   temperature: 0.2

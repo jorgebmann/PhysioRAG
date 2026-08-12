@@ -1,6 +1,6 @@
 # 🫀 PhysioRAG: Offline-First Multi-Modal RAG for Clinical Time-Series Data
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Powered by pyturboquant](https://img.shields.io/badge/Powered%20by-pyturboquant-ff69b4.svg)](https://github.com/jorgebmann/pyturboquant)
 
@@ -11,9 +11,9 @@ It bridges the gap between raw intensive care unit (ICU) waveforms (Ventilator P
 ## 🚀 The Problem & Our Solution
 Hospitals, CROs, and MedTech R&D departments produce terabytes of physiological time-series data. Traditional RAG systems are entirely text-bound and fail to interpret the complex "grammar" of machine signals. 
 
-**PhysioRAG** solves this by leveraging state-of-the-art **Time-Series Foundation Models** (e.g., *MorphologyFM*, *PaPaGei*, *Chronos*) to map multi-modal sensor waveforms into the same semantic vector space as text.
+**PhysioRAG** maps multi-modal sensor waveforms into the same semantic vector space as text, so signals and clinical language are searchable together. The current implementation ships a lightweight **1D-CNN baseline encoder** (`baseline_cnn`); reusing open dual-encoders (e.g. MERL for ECG) and modality-specific models (*PaPaGei*, *Chronos*) is on the roadmap (see `PROJECT_BRIEF_PhysioRAG.md`, Phase B+).
 
-**The result:** You can query 50,000 hours of ventilator data using natural language—completely offline.
+**The result:** You can query large archives of ventilator data using natural language—completely offline.
 
 > **Example Query:** *"Find all ventilator pressure curves from last year showing patients with ARDS breathing spontaneously against the machine."* -> Returns the exact 12-second waveform snippets and associated clinical metadata in milliseconds.
 
@@ -36,13 +36,23 @@ Hospitals, CROs, and MedTech R&D departments produce terabytes of physiological 
 
 ### 1. Clone & Install
 
+Requires **Python >= 3.12** and **PyTorch >= 2.4** (needed by
+[pyturboquant](https://github.com/jorgebmann/pyturboquant)).
+
 ```bash
 git clone https://github.com/jorgebmann/PhysioRAG.git
 cd PhysioRAG
-python -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+# Include the real compressor (pyturboquant) and dev tools:
+pip install -e ".[dev,quant]"
 ```
+
+Without the `quant` extra, quantization falls back to a `float16_stub` (little
+real compression). Phase A smoke / strict runs require the real TurboQuant codec
+from `pyturboquant.core` (installed via the `quant` extra: `pyturboquant>=0.1.1`).
+Weaviate still indexes the **dequantized float32 reconstruction** for ANN search;
+ingest reports compressed-byte / fidelity stats so “TurboQuant on” is measurable.
 
 ### 2. Start local infrastructure (Weaviate + Ollama)
 
@@ -79,12 +89,16 @@ python scripts/download_mimic_wdb.py --max-records 3
 ### 5. Ingest → encode → quantize → index
 
 ```bash
-# Real WFDB (default):
+# Real WFDB (default collection: WaveformEpochV2):
 python scripts/ingest_waveforms.py --dataset mimic_wdb --modality ventilator
 
-# Or fully offline synthetic demo:
+# Or fully offline synthetic demo (auto-uses collection WaveformEpochDemo):
 python scripts/ingest_waveforms.py --dataset mimic_demo --modality ventilator
 ```
+
+`mimic_demo` is written to `WaveformEpochDemo` so curated scenarios are not
+drowned out by a larger `mimic_wdb` index. Real WFDB stays on `WaveformEpochV2`
+(see `configs/default.yaml`).
 
 ### 6. Search and view plottable evidence
 
@@ -116,6 +130,76 @@ http://127.0.0.1:8000/
 Type a natural-language query (or click one of the example chips), see the
 matched waveform epochs rendered as plots alongside the LLM-synthesized,
 citation-grounded answer. Great for a quick screen-recorded walkthrough.
+
+## 🔒 Air-Gapped Install & Smoke Test
+
+PhysioRAG is designed to run with no outbound network at query time. Do the
+one-time downloads while online, then flip the offline switches.
+
+### Prepare once (online)
+
+```bash
+# 1. Python deps incl. the real compressor
+pip install -e ".[dev,quant]"
+
+# 2. Pre-cache the local text encoder into your Hugging Face cache
+python -c "from sentence_transformers import SentenceTransformer; \
+SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
+# 3. Pull the local LLM and the Weaviate image
+ollama pull llama3.1
+docker pull cr.weaviate.io/semitechnologies/weaviate:1.34.0
+```
+
+### Run offline
+
+```bash
+# Force libraries to use local caches only (no network calls)
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# Weaviate + Ollama run locally as shown in the Quickstart above.
+```
+
+Strict Phase A smoke requires these flags (or pass `--no-strict`).
+
+### Strict mode
+
+Set strict mode so a broken offline setup fails loudly instead of silently
+degrading to keyword-only search or skipping synthesis:
+
+```bash
+export PHYSIORAG_STRICT=1
+# or per-run: python scripts/ingest_waveforms.py --strict ...
+# or in configs/default.yaml: runtime.strict: true
+```
+
+Under strict mode, ingest/serve raise a clear error if the text encoder can't
+load, the vector store is unreachable, `pyturboquant.core` isn't installed, or
+Ollama isn't healthy. `/search` also returns HTTP 503 if synthesis is requested
+but Ollama fails while strict.
+
+### Verify (Phase A acceptance)
+
+With Weaviate and Ollama running, one command proves the whole path
+(ingest → Weaviate → `/health` → `/search` → PNG plot → grounded Ollama answer):
+
+```bash
+# Synthetic demo (default):
+python scripts/smoke_demo.py
+
+# Bounded WFDB (after download_mimic_wdb.py):
+python scripts/smoke_demo.py --dataset mimic_wdb
+```
+
+It exits non-zero with an actionable message if any step fails. You can also
+sanity-check the service directly:
+
+```bash
+curl -s http://127.0.0.1:8000/health
+# expect: {"status":"ok","text_encoder":true,"llm":true,"store":"weaviate",
+#          "store_ok":true,"quant_available":true,...}
+```
 
 ## 🎯 Primary Use Cases
 * **MedTech R&D:** Finding edge-cases in historical sensor logs to improve machine algorithms and alarm systems.

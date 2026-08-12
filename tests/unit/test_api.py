@@ -71,3 +71,28 @@ def test_search_and_plot(monkeypatch, tmp_path: Path) -> None:
 
         missing = client.get("/waveforms/does-not-exist")
         assert missing.status_code == 404
+
+
+def test_strict_search_requires_synthesis(monkeypatch, tmp_path: Path) -> None:
+    """Under strict mode, synthesize=true with no LLM returns 503."""
+    import api.main as api_main
+
+    cfg = _memory_config(tmp_path)
+    cfg["synthesis"] = {"enabled": True}  # would normally require Ollama
+    monkeypatch.setattr(api_main, "load_config", lambda *a, **k: cfg)
+    # Force non-strict lifespan build by disabling synthesis at startup, then
+    # flip strict + synthesize path manually after startup.
+    cfg["synthesis"] = {"enabled": False}
+
+    with TestClient(api_main.app) as client:
+        _seed(api_main._state["store"], api_main._state["arrays"])
+        api_main._state["strict"] = True
+        api_main._state["llm"] = None
+        resp = client.post("/search", json={"query": "ARDS", "top_k": 1, "synthesize": True})
+        assert resp.status_code == 503
+        assert "synthesis" in resp.json()["detail"].lower()
+
+        # synthesize=false still works in strict mode without an LLM.
+        resp2 = client.post("/search", json={"query": "ARDS", "top_k": 1, "synthesize": False})
+        assert resp2.status_code == 200
+        assert resp2.json()["hits"]

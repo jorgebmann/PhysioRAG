@@ -82,6 +82,19 @@ class WeaviateVectorStore(VectorStore):
     def __exit__(self, *args: object) -> None:
         self.close()
 
+    def reset_schema(self) -> None:
+        """Drop and recreate the collection (use when vector dims change)."""
+        if self._client.collections.exists(self.collection_name):
+            self._client.collections.delete(self.collection_name)
+        self.ensure_schema()
+
+    def health(self) -> bool:
+        """True when the Weaviate client can see (or create) this collection."""
+        try:
+            return bool(self._client.collections.exists(self.collection_name))
+        except Exception:
+            return False
+
     def ensure_schema(self) -> None:
         from weaviate.classes.config import Configure, DataType, Property
 

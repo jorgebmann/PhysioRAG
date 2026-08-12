@@ -47,3 +47,7 @@ class VectorStore(ABC):
     def get_by_epoch_id(self, epoch_id: str) -> StoredRecord | None:
         """Fetch a single record by epoch id (for plotting). Default: unsupported."""
         return None
+
+    def health(self) -> bool:
+        """Return True when the backend is reachable / usable."""
+        return True
