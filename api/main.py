@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import io
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from physiorag import __version__
@@ -231,3 +233,10 @@ def _render_png(signal: np.ndarray, channels: list[str], fs: float, record: Any)
     fig.savefig(buf, format="png", dpi=110)
     plt.close(fig)
     return buf.getvalue()
+
+
+# Demo search widget (static HTML/JS). Mounted last so it never shadows the
+# API routes defined above (Starlette matches routes in registration order).
+_WEB_DIR = Path(__file__).resolve().parents[1] / "web"
+if _WEB_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")

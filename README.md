@@ -105,6 +105,18 @@ curl -X POST http://127.0.0.1:8000/search \
 With Ollama running, `/search` also returns a grounded `answer` citing the epoch
 ids it used. Interactive API docs live at `http://127.0.0.1:8000/docs`.
 
+### 7. Try the search widget
+
+A tiny static demo UI (no build step) is served by the same FastAPI app:
+
+```
+http://127.0.0.1:8000/
+```
+
+Type a natural-language query (or click one of the example chips), see the
+matched waveform epochs rendered as plots alongside the LLM-synthesized,
+citation-grounded answer. Great for a quick screen-recorded walkthrough.
+
 ## 🎯 Primary Use Cases
 * **MedTech R&D:** Finding edge-cases in historical sensor logs to improve machine algorithms and alarm systems.
 * **Pharma & Clinical Trials:** Discovering physiological anomalies in historic trial data without relying on manual text logs.
