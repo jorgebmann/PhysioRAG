@@ -108,3 +108,30 @@ def test_hybrid_text_is_default_mode() -> None:
     # Without a text encoder it falls back to keyword search over text metadata.
     hits = retriever.search_text("sinus", top_k=1)
     assert hits and hits[0].epoch_id == "nsr"
+
+
+def test_hybrid_text_applies_vent_glossary_for_ventilator() -> None:
+    encoder = _RecordingEncoder()
+    store = InMemoryVectorStore()
+    store.upsert([_rec("v", [0.0, 0.0, 1.0], "double triggering pressure spike")])
+    retriever = Retriever(store, text_encoder=encoder, mode="hybrid_text")
+    retriever.search_text("Druckanstieg", top_k=1, filters={"modality": "ventilator"})
+    assert "pressure spike" in encoder.seen[-1]
+
+
+def test_hybrid_text_applies_vent_glossary_for_all_modalities() -> None:
+    encoder = _RecordingEncoder()
+    store = InMemoryVectorStore()
+    store.upsert([_rec("v", [0.0, 0.0, 1.0], "double triggering pressure spike")])
+    retriever = Retriever(store, text_encoder=encoder, mode="hybrid_text")
+    retriever.search_text("Druckanstieg", top_k=1)  # no modality filter
+    assert "pressure spike" in encoder.seen[-1]
+
+
+def test_hybrid_text_skips_vent_glossary_for_non_ventilator() -> None:
+    encoder = _RecordingEncoder()
+    store = InMemoryVectorStore()
+    store.upsert([_rec("s", [0.0, 0.0, 1.0], "spo2 desaturation")])
+    retriever = Retriever(store, text_encoder=encoder, mode="hybrid_text")
+    retriever.search_text("Druckanstieg", top_k=1, filters={"modality": "spo2"})
+    assert encoder.seen[-1] == "Druckanstieg"

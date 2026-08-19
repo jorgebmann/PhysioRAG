@@ -68,7 +68,7 @@ def test_ingest_and_search_weaviate(tmp_path: Path) -> None:
             store=store,
             text_encoder=None,
         )
-        assert result["epochs_written"] == 4
+        assert result["epochs_written"] == 8
 
         hits = store.search_text("ARDS spontaneous pressure spike", top_k=3)
         assert hits

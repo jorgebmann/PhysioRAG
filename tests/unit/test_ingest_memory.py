@@ -40,7 +40,7 @@ def test_run_ingest_demo_to_memory(tmp_path: Path) -> None:
     )
 
     assert result["status"] == "ok"
-    assert result["epochs_written"] == 4
+    assert result["epochs_written"] == 8
     hits = store.search_text("ARDS pressure spike", top_k=3)
     assert hits
     assert any("ARDS" in (h.text or "") for h in hits)

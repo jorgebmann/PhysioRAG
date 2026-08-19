@@ -55,9 +55,9 @@ storage:
   weaviate_url: http://127.0.0.1:8080
   weaviate_grpc_port: 50051
   skip_init_checks: false
-  # Default collection for real / bounded WFDB ingest. The Phase A smoke demo
-  # overrides this to WaveformEpochDemo so curated scenarios are not drowned
-  # out by larger mimic_wdb indexes (and so WFDB ingest never lands in Demo).
+  # Default collection for real / bounded WFDB ingest. mimic_demo ingest and
+  # the product UI search path use WaveformEpochDemo (API falls back to Demo
+  # when this collection is empty).
   collection: WaveformEpochV2
 
 retrieval:

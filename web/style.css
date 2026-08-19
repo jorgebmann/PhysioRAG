@@ -317,6 +317,22 @@ button#search-btn:disabled {
   word-break: break-all;
 }
 
+.hit__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.tag {
+  font-size: 11px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  color: var(--text-dim);
+}
+
 .hit__text {
   font-size: 13px;
   line-height: 1.4;
