@@ -11,7 +11,7 @@ It bridges the gap between raw intensive care unit (ICU) waveforms (Ventilator P
 ## 🚀 The Problem & Our Solution
 Hospitals, CROs, and MedTech R&D departments produce terabytes of physiological time-series data. Traditional RAG systems are entirely text-bound and fail to interpret the complex "grammar" of machine signals. 
 
-**PhysioRAG** maps multi-modal sensor waveforms into the same semantic vector space as text, so signals and clinical language are searchable together. The current implementation ships a lightweight **1D-CNN baseline encoder** (`baseline_cnn`); reusing open dual-encoders (e.g. MERL for ECG) and modality-specific models (*PaPaGei*, *Chronos*) is on the roadmap (see `PROJECT_BRIEF_PhysioRAG.md`, Phase B+).
+**PhysioRAG** maps multi-modal sensor waveforms into the same semantic vector space as text, so signals and clinical language are searchable together. It ships a lightweight **1D-CNN baseline encoder** (`baseline_cnn`) for the ventilator track and a **reused open ECG–language dual-encoder** (MERL) for CLIP-style ECG search (see [ECG semantic search](#-ecg-semantic-search-phase-b--reused-merl-dual-encoder) below). Further modality-specific models (*PaPaGei*, *Chronos*) remain on the roadmap (see `PROJECT_BRIEF_PhysioRAG.md`, Phase B+).
 
 **The result:** You can query large archives of ventilator data using natural language—completely offline.
 
@@ -131,6 +131,96 @@ Type a natural-language query (or click one of the example chips), see the
 matched waveform epochs rendered as plots alongside the LLM-synthesized,
 citation-grounded answer. Great for a quick screen-recorded walkthrough.
 
+## 🫀 ECG semantic search (Phase B — reused MERL dual-encoder)
+
+PhysioRAG can search **12-lead ECG** by natural language using an open ECG–language
+dual-encoder ([MERL](https://github.com/cheliu-computation/MERL-ICML2024),
+Liu et al., ICML 2024) — **no training required**. The ECG signal tower produces
+the index vector; the matched Med-CPT text tower embeds queries into the *same*
+256-d space, so retrieval runs CLIP-style (text → ECG signal) instead of the
+ventilator MiniLM/BM25 hybrid. This lives in its own config and collection; the
+ventilator default (`configs/default.yaml`) is untouched.
+
+### 1. Get the MERL checkpoint (once, online)
+
+Download the **full** `*_ckpt.pth` (both towers — the `*_encoder.pth` is ECG-only
+and can't serve queries) from the [MERL release](https://github.com/cheliu-computation/MERL-ICML2024)
+and place it locally (git-ignored):
+
+```bash
+mkdir -p data/models/merl
+# copy res18_best_ckpt.pth into data/models/merl/
+# (path is set in configs/ecg_merl.yaml -> embeddings.merl.checkpoint)
+```
+
+Pre-cache the Med-CPT text model into your Hugging Face cache:
+
+```bash
+python -c "from transformers import AutoModel, AutoTokenizer; \
+AutoModel.from_pretrained('ncbi/MedCPT-Query-Encoder'); \
+AutoTokenizer.from_pretrained('ncbi/MedCPT-Query-Encoder')"
+```
+
+> The wrapper is MERL's ResNet18 `ECGCLIP` path (no stem max-pool, `downconv` +
+> attention pool, Med-CPT `pooler_output` → `proj_t`) and loads with `strict=True`.
+> A ViT `*_ckpt.pth` or an ECG-only `*_encoder.pth` fails at load with a sample
+> of checkpoint keys. Confirm the MERL license before redistributing weights.
+
+### 2. Download a bounded PTB-XL subset (open access)
+
+```bash
+python scripts/download_ptbxl.py --max-records 200
+```
+
+### 3. Ingest ECG (256-d signal vectors → isolated collection)
+
+```bash
+python scripts/ingest_waveforms.py --config configs/ecg_merl.yaml \
+  --dataset ptbxl --modality ecg --reset-collection
+```
+
+`--reset-collection` is needed the first time because `WaveformEpochEcg` uses
+256-d vectors (vs the 128-d ventilator index). Hits include a 3×4 12-lead PNG
+(`/waveforms/{epoch_id}?format=png`).
+
+### 4. Search ECG by natural language
+
+```bash
+# Point the API at the ECG config:
+PHYSIORAG_CONFIG=configs/ecg_merl.yaml uvicorn api.main:app --reload
+
+curl -X POST http://127.0.0.1:8000/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"atrial fibrillation with rapid ventricular response","modality":"ecg","top_k":5}'
+```
+
+`signal_aligned` search applies the same PTB-XL DE/SV→EN glossary as eval when
+the query contains those tokens (`vorhofflimmern` → `atrial fibrillation`).
+English queries are left unchanged. The ventilator `hybrid_text` path is not
+rewritten.
+
+### 5. Report Recall@k vs the baseline
+
+```bash
+python scripts/eval_ecg_retrieval.py --config configs/ecg_merl.yaml \
+  --dataset ptbxl --max-records 200
+```
+
+This runs text → ECG Recall@{1,5,10} on a frozen, patient-level query set.
+Queries are the **raw diagnostic report** (product metric), the same reports after
+a longest-match DE/SV→EN glossary (`merl_report_en_to_ecg`; no extra encoder),
+and, separately, the English **SCP caption** (closer to MERL zeroshot prompts).
+MERL ECG input is min-max scaled to [0, 1] with aVL/aVF swapped to MIMIC lead
+order; queries are lowercased. Report queries are also scored after ingest
+quantization. MiniLM is a text→text reference only (report → SCP caption) plus
+chance `k / corpus_size`. Writes `data/processed/ecg_recall.json`.
+
+### Offline note
+
+Everything above runs air-gapped once the MERL checkpoint and Med-CPT are cached
+(`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`). PTB-XL is open access (no MIMIC
+DUA), but review its PhysioNet terms.
+
 ## 🔒 Air-Gapped Install & Smoke Test
 
 PhysioRAG is designed to run with no outbound network at query time. Do the
@@ -200,6 +290,16 @@ curl -s http://127.0.0.1:8000/health
 # expect: {"status":"ok","text_encoder":true,"llm":true,"store":"weaviate",
 #          "store_ok":true,"quant_available":true,...}
 ```
+
+ECG (Phase B), after the MERL checkpoint + PTB-XL subset from above:
+
+```bash
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+python scripts/smoke_demo.py --dataset ptbxl --max-records 20
+```
+
+That ingest → `WaveformEpochEcg` → `/search` (`sinus rhythm` and `vorhofflimmern`)
+→ landscape 12-lead PNG (`data/processed/ecg_smoke.png`) → cited Ollama answer.
 
 ## 🎯 Primary Use Cases
 * **MedTech R&D:** Finding edge-cases in historical sensor logs to improve machine algorithms and alarm systems.

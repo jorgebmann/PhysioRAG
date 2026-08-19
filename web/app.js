@@ -1,8 +1,21 @@
-const EXAMPLE_QUERIES = [
-  "Patienten mit ARDS, die spontan gegen das Beatmungsgerät atmen und dadurch einen Druckanstieg verursachen",
-  "Abfall der Sauerstoffsättigung (SpO2) unter 90 Prozent",
-  "COPD-Patient mit Air Trapping und steigendem endexspiratorischem Druck",
-];
+const EXAMPLE_QUERIES = {
+  "": [
+    "Patienten mit ARDS, die spontan gegen das Beatmungsgerät atmen und dadurch einen Druckanstieg verursachen",
+    "Abfall der Sauerstoffsättigung (SpO2) unter 90 Prozent",
+    "COPD-Patient mit Air Trapping und steigendem endexspiratorischem Druck",
+  ],
+  ventilator: [
+    "Patienten mit ARDS, die spontan gegen das Beatmungsgerät atmen und dadurch einen Druckanstieg verursachen",
+    "COPD-Patient mit Air Trapping und steigendem endexspiratorischem Druck",
+  ],
+  spo2: ["Abfall der Sauerstoffsättigung (SpO2) unter 90 Prozent"],
+  ecg: [
+    "sinus rhythm",
+    "atrial fibrillation",
+    "vorhofflimmern",
+    "right bundle branch block",
+  ],
+};
 
 const form = document.getElementById("search-form");
 const queryInput = document.getElementById("query");
@@ -48,7 +61,8 @@ function stopTimer() {
 
 function renderExamples() {
   examplesEl.innerHTML = "";
-  for (const example of EXAMPLE_QUERIES) {
+  const examples = EXAMPLE_QUERIES[modalitySelect.value] || EXAMPLE_QUERIES[""];
+  for (const example of examples) {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "example-chip";
@@ -201,5 +215,6 @@ async function runSearch(event) {
 }
 
 form.addEventListener("submit", runSearch);
+modalitySelect.addEventListener("change", renderExamples);
 renderExamples();
 refreshHealth();
