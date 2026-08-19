@@ -6,6 +6,8 @@ so it is skipped unless PHYSIORAG_SMOKE=1 is set.
 
 Set PHYSIORAG_SMOKE_DATASET=mimic_wdb to exercise the bounded WFDB path
 (requires a local mirror from scripts/download_mimic_wdb.py).
+Set PHYSIORAG_SMOKE_DATASET=ptbxl for the ECG / MERL path (MERL checkpoint +
+PTB-XL subset + Med-CPT cache).
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_smoke_demo_script_passes() -> None:
     dataset = os.environ.get("PHYSIORAG_SMOKE_DATASET", "mimic_demo")
     cmd = [sys.executable, str(ROOT / "scripts" / "smoke_demo.py"), "--dataset", dataset]
+    if dataset == "ptbxl":
+        cmd.extend(["--max-records", os.environ.get("PHYSIORAG_SMOKE_MAX_RECORDS", "20")])
     result = subprocess.run(
         cmd,
         capture_output=True,

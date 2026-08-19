@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
-"""Phase A acceptance smoke test for the PhysioRAG demo path.
+"""End-to-end smoke test for the PhysioRAG demo path.
 
 Proves the full product path works end-to-end and air-gapped:
 
     ingest -> Weaviate -> /health -> /search -> plot -> Ollama answer
 
-Supports ``mimic_demo`` (default) and bounded ``mimic_wdb`` when a local mirror
-exists. Runs in strict mode by default, so a broken offline setup (missing
-MiniLM cache, Weaviate down, no pyturboquant, Ollama unavailable) fails loudly
-instead of silently degrading. Exits non-zero with an actionable message on any
-failure.
-
-Usage:
-    # Requires: Weaviate on :8080, Ollama running with the configured model,
-    # MiniLM cached locally, and `pip install ".[quant]"`.
+Phase A (ventilator):
     python scripts/smoke_demo.py
     python scripts/smoke_demo.py --dataset mimic_wdb
-    python scripts/smoke_demo.py --no-strict          # allow soft degrade
-    python scripts/smoke_demo.py --query "air trapping in COPD"
 
+Phase B (ECG / MERL, isolated collection):
+    python scripts/smoke_demo.py --dataset ptbxl --max-records 20
+
+Requires Weaviate + Ollama. Vent also needs MiniLM + pyturboquant; ECG needs
+the MERL checkpoint, Med-CPT cache, PTB-XL files, and pyturboquant.
 """
 
 from __future__ import annotations
@@ -36,6 +31,13 @@ for path in (ROOT, SRC):
 
 DEMO_COLLECTION = "WaveformEpochDemo"
 OFFLINE_ENV_VARS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+ECG_DATASETS = {"ptbxl", "ptb-xl", "ptb_xl"}
+DEFAULT_VENT_QUERY = (
+    "ARDS patient breathing spontaneously against the ventilator causing a pressure spike"
+)
+DEFAULT_ECG_QUERY = "sinus rhythm"
+DEFAULT_ECG_CONFIG = ROOT / "configs" / "ecg_merl.yaml"
+DEFAULT_ECG_PLOT = ROOT / "data" / "processed" / "ecg_smoke.png"
 
 
 class SmokeError(RuntimeError):
@@ -61,12 +63,13 @@ def _ensure_offline_flags(*, strict: bool) -> None:
         _step(f"set {name}=1 for soft-offline smoke")
 
 
-def _prepare_config(config: dict, *, dataset: str) -> None:
+def _prepare_config(config: dict, *, dataset: str, max_records: int | None) -> None:
     """Isolate demo vs WFDB collections so indexes never collide."""
     storage = config.setdefault("storage", {})
     if dataset == "mimic_demo":
         storage["collection"] = DEMO_COLLECTION
-    # mimic_wdb keeps configs/default.yaml collection (WaveformEpochV2).
+    if max_records is not None:
+        config.setdefault("ingestion", {})["max_records"] = int(max_records)
 
 
 def _require_wdb_source(config: dict) -> Path:
@@ -79,6 +82,51 @@ def _require_wdb_source(config: dict) -> Path:
             "Run: python scripts/download_mimic_wdb.py --max-records 3"
         )
     return source
+
+
+def _require_ptbxl_source(config: dict) -> Path:
+    from physiorag.pipeline.ingest import _resolve_source
+
+    source = _resolve_source("ptbxl", config)
+    if not (source / "ptbxl_database.csv").is_file():
+        raise SmokeError(
+            f"PTB-XL source not found at {source}. "
+            "Run: python scripts/download_ptbxl.py --max-records 200"
+        )
+    return source
+
+
+def _require_merl_checkpoint(config: dict) -> Path:
+    rel = str(config.get("embeddings", {}).get("merl", {}).get("checkpoint") or "")
+    ckpt = Path(rel)
+    if not ckpt.is_file():
+        raise SmokeError(
+            f"MERL checkpoint missing at {ckpt or '(unset)'}. "
+            "Download the full *_ckpt.pth (see README Phase B) and set "
+            "embeddings.merl.checkpoint in configs/ecg_merl.yaml."
+        )
+    return ckpt
+
+
+def apply_dataset_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill ECG config/modality/query when ``--dataset ptbxl`` is used."""
+    if args.dataset in ECG_DATASETS:
+        if not args.config:
+            args.config = str(DEFAULT_ECG_CONFIG)
+        if args.modality == "ventilator":
+            args.modality = "ecg"
+        if args.query == DEFAULT_VENT_QUERY:
+            args.query = DEFAULT_ECG_QUERY
+        if args.plot_out is None:
+            args.plot_out = str(DEFAULT_ECG_PLOT)
+    return args
+
+
+def _search_payload(args: argparse.Namespace, query: str, *, synthesize: bool) -> dict:
+    body: dict = {"query": query, "top_k": 3, "synthesize": synthesize}
+    if args.modality == "ecg":
+        body["modality"] = "ecg"
+    return body
 
 
 def _run(args: argparse.Namespace) -> None:
@@ -96,9 +144,12 @@ def _run(args: argparse.Namespace) -> None:
     from physiorag.pipeline.ingest import _format_summary, run_ingest
 
     config = load_config(args.config)
-    _prepare_config(config, dataset=args.dataset)
+    _prepare_config(config, dataset=args.dataset, max_records=args.max_records)
     if args.dataset in {"mimic_wdb", "mimic4wdb"}:
         _require_wdb_source(config)
+    if args.dataset in ECG_DATASETS:
+        _require_ptbxl_source(config)
+        _require_merl_checkpoint(config)
 
     backend = config.get("storage", {}).get("backend", "memory")
     collection = config.get("storage", {}).get("collection")
@@ -166,7 +217,7 @@ def _run(args: argparse.Namespace) -> None:
 
         # 3. Cross-modal search should return plottable hits + a grounded answer.
         _step(f"POST /search query={args.query!r}")
-        resp = client.post("/search", json={"query": args.query, "top_k": 3})
+        resp = client.post("/search", json=_search_payload(args, args.query, synthesize=True))
         if resp.status_code != 200:
             raise SmokeError(f"/search returned {resp.status_code}: {resp.text}")
         body = resp.json()
@@ -177,9 +228,38 @@ def _run(args: argparse.Namespace) -> None:
         _step(f"top hit: epoch_id={top['epoch_id']} score={top.get('score')} text={top.get('text')!r}")
 
         # 4. The plottable evidence must be fetchable as a PNG.
+        meta = client.get(f"/waveforms/{top['epoch_id']}", params={"format": "json"})
+        if meta.status_code != 200:
+            raise SmokeError(f"waveform JSON failed: status={meta.status_code}")
+        n_ch = len((meta.json() or {}).get("channels") or [])
         plot = client.get(f"/waveforms/{top['epoch_id']}", params={"format": "png"})
         if plot.status_code != 200 or plot.headers.get("content-type") != "image/png":
             raise SmokeError(f"plot fetch failed: status={plot.status_code}")
+        from physiorag.plotting import png_wh
+
+        width, height = png_wh(plot.content)
+        _step(f"plot PNG {width}x{height}px channels={n_ch}")
+        if n_ch == 12:
+            if height >= 1400 or width <= height:
+                raise SmokeError(
+                    f"12-lead PNG should be a landscape 3×4 grid, got {width}x{height}"
+                )
+        if args.plot_out:
+            out = Path(args.plot_out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(plot.content)
+            _step(f"wrote {out}")
+
+        if args.dataset in ECG_DATASETS:
+            _step("POST /search query='vorhofflimmern' (glossary, no synthesis)")
+            de = client.post(
+                "/search",
+                json=_search_payload(args, "vorhofflimmern", synthesize=False),
+            )
+            if de.status_code != 200 or not (de.json().get("hits") or []):
+                raise SmokeError(
+                    f"German glossary query failed: status={de.status_code} body={de.text}"
+                )
 
         # 5. The answer must be grounded and cite epoch ids in the answer text.
         answer = body.get("answer")
@@ -206,18 +286,28 @@ def _run(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--config", default=None, help="Path to YAML config (default: configs/default.yaml)")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--config", default=None, help="Path to YAML config")
     parser.add_argument(
         "--dataset",
         default="mimic_demo",
-        choices=["mimic_demo", "mimic_wdb", "mimic4wdb"],
-        help="mimic_demo (synthetic) or bounded mimic_wdb (requires local mirror).",
+        choices=["mimic_demo", "mimic_wdb", "mimic4wdb", "ptbxl"],
+        help="mimic_demo (synthetic), bounded mimic_wdb, or ptbxl (ECG / MERL).",
     )
     parser.add_argument("--modality", default="ventilator", choices=["ventilator", "spo2", "ecg"])
+    parser.add_argument("--query", default=DEFAULT_VENT_QUERY)
     parser.add_argument(
-        "--query",
-        default="ARDS patient breathing spontaneously against the ventilator causing a pressure spike",
+        "--max-records",
+        type=int,
+        default=None,
+        help="Cap ingest studies (ECG smoke: 20 is enough to prove the path).",
+    )
+    parser.add_argument(
+        "--plot-out",
+        default=None,
+        help="Write the top-hit PNG here (ECG default: data/processed/ecg_smoke.png).",
     )
     parser.add_argument(
         "--strict",
@@ -225,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Require text encoder / Weaviate / pyturboquant / Ollama / offline flags (default: strict).",
     )
-    args = parser.parse_args(argv)
+    args = apply_dataset_defaults(parser.parse_args(argv))
 
     try:
         _run(args)
