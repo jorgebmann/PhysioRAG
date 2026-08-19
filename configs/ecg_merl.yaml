@@ -1,0 +1,85 @@
+# PhysioRAG ECG config (Phase B): reused MERL dual-encoder, offline.
+# Overlay for the ECG track — the ventilator default lives in default.yaml and
+# is intentionally left unchanged. Use with:
+#   python scripts/ingest_waveforms.py --config configs/ecg_merl.yaml \
+#       --dataset ptbxl --modality ecg --reset-collection
+#
+# NOTE: Never put credentials here. PhysioNet auth is read from the environment
+# (PHYSIONET_USERNAME / PHYSIONET_PASSWORD); MERL weights are a local file.
+
+runtime:
+  strict: false
+
+data:
+  raw_dir: data/raw
+  interim_dir: data/interim
+  processed_dir: data/processed
+  demo_dir: data/demo
+
+physionet:
+  # PTB-XL is public/open-access on PhysioNet (still requires accepting terms).
+  database: ptb-xl
+  mirror_subdir: ptbxl
+
+ingestion:
+  dataset: ptbxl          # ptbxl (12-lead study-level ECG)
+  modality: ecg
+  window_seconds: 10.0
+  target_sample_rate_hz: 500
+  overlap_seconds: 0.0
+  max_epochs_per_record: 1  # one 10 s study -> one epoch
+  max_records: 200          # bounded ECG demo corpus
+
+embeddings:
+  encoder: merl             # reused ECG-CLIP signal tower
+  embedding_dim: 256        # MERL projection_size (NOT 128)
+  device: cpu
+  batch_size: 16
+  # Query text tower must be MERL's matched Med-CPT projection so NL queries
+  # land in the same 256-d space as the ECG (waveform) vectors.
+  text_encoder_enabled: true
+  text_encoder: merl
+  text_embedding_dim: 256
+  merl:
+    # Local path to the FULL ResNet18 MERL checkpoint (both towers + CLIP heads).
+    # Use '*_ckpt.pth' (keys: ecg_encoder, downconv, att_pool_head, proj_t).
+    # '*_encoder.pth' is ECG-backbone only; vit_* checkpoints are not supported.
+    checkpoint: data/models/merl/res18_best_ckpt.pth
+    text_model: ncbi/MedCPT-Query-Encoder
+    projection_dim: 256
+    in_leads: 12
+    signal_length: 5000     # 10 s @ 500 Hz
+    sample_rate_hz: 500
+    minmax: true            # MERL train/eval: (x-min)/(max-min)
+    swap_avl_avf: true      # MIMIC lead order is aVF before aVL
+    lowercase_text: true    # MERL lowercases reports before the text tower
+
+quantization:
+  enabled: true
+  bits: 8
+
+storage:
+  backend: weaviate
+  array_dir: data/processed/arrays
+  weaviate_url: http://127.0.0.1:8080
+  weaviate_grpc_port: 50051
+  skip_init_checks: false
+  # Isolated collection: 256-d ECG vectors must not share the 128-d vent index.
+  collection: WaveformEpochEcg
+
+retrieval:
+  top_k: 5
+  # CLIP-style text -> ECG: encode query with MERL text tower, NN the waveform
+  # vectors directly (not the MiniLM/BM25 hybrid used for ventilator).
+  mode: signal_aligned
+
+synthesis:
+  backend: ollama
+  model: llama3.1
+  base_url: http://127.0.0.1:11434
+  temperature: 0.2
+  enabled: true
+
+api:
+  host: 127.0.0.1
+  port: 8000

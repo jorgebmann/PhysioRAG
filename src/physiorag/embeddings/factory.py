@@ -51,3 +51,12 @@ def _build_baseline_cnn(config: dict[str, Any]) -> TimeSeriesEncoder:
 
 
 register_encoder("baseline_cnn", _build_baseline_cnn)
+
+
+def _build_merl(config: dict[str, Any]) -> TimeSeriesEncoder:
+    from physiorag.embeddings.merl import build_merl_encoder
+
+    return build_merl_encoder(config)
+
+
+register_encoder("merl", _build_merl)

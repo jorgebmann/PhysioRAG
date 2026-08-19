@@ -73,6 +73,47 @@ def test_search_and_plot(monkeypatch, tmp_path: Path) -> None:
         assert missing.status_code == 404
 
 
+def test_ecg_png_is_twelve_lead_grid(monkeypatch, tmp_path: Path) -> None:
+    import api.main as api_main
+    from physiorag.plotting import ECG_LEAD_GRID, png_wh
+    from physiorag.storage.base import StoredRecord
+
+    monkeypatch.setattr(api_main, "load_config", lambda *a, **k: _memory_config(tmp_path))
+    channels = [lead for row in ECG_LEAD_GRID for lead in row]
+    n = 500
+    t = np.arange(n) / 500.0
+    signal = np.stack([np.sin(2 * np.pi * (1.0 + k * 0.05) * t) for k in range(12)]).astype(
+        np.float32
+    )
+
+    with TestClient(api_main.app) as client:
+        arrays = api_main._state["arrays"]
+        store = api_main._state["store"]
+        ref = arrays.save("ecg-001_0", signal)
+        store.upsert(
+            [
+                StoredRecord(
+                    record_id="ecg-001",
+                    epoch_id="ecg-001_0",
+                    modality="ecg",
+                    embedding=np.ones(8, dtype=np.float32),
+                    array_ref=ref,
+                    metadata={
+                        "start_time_s": 0.0,
+                        "sample_rate_hz": 500.0,
+                        "channels": channels,
+                    },
+                    text="sinus rhythm normal ecg",
+                )
+            ]
+        )
+        png = client.get("/waveforms/ecg-001_0", params={"format": "png"})
+        assert png.status_code == 200
+        width, height = png_wh(png.content)
+        assert height < 1400
+        assert width > height
+
+
 def test_strict_search_requires_synthesis(monkeypatch, tmp_path: Path) -> None:
     """Under strict mode, synthesize=true with no LLM returns 503."""
     import api.main as api_main

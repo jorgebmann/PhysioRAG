@@ -29,6 +29,9 @@ def _resolve_source(dataset: str, config: dict[str, Any]) -> Path:
     if dataset in {"mimic_wdb", "mimic4wdb"}:
         subdir = config.get("physionet", {}).get("mirror_subdir", "mimic4wdb")
         return raw_dir / subdir
+    if dataset in {"ptbxl", "ptb-xl", "ptb_xl"}:
+        subdir = config.get("physionet", {}).get("mirror_subdir", "ptbxl")
+        return raw_dir / subdir
     return raw_dir / dataset
 
 
@@ -41,6 +44,15 @@ def _build_processor(dataset: str, modality: str, config: dict[str, Any]) -> Wav
             modality=modality,
             window_seconds=window_seconds,
             sample_rate_hz=target_fs,
+        )
+    if dataset in {"ptbxl", "ptb-xl", "ptb_xl"}:
+        from physiorag.ingestion.ecg_processor import PtbxlEcgProcessor
+
+        return PtbxlEcgProcessor(
+            modality=modality,
+            window_seconds=window_seconds,
+            target_sample_rate_hz=target_fs,
+            max_records=int(ing.get("max_records", 200)),
         )
     return WfdbWaveformProcessor(
         modality=modality,
@@ -55,13 +67,9 @@ def _maybe_build_text_encoder(config: dict[str, Any], *, strict: bool) -> Any | 
     if not emb.get("text_encoder_enabled", True):
         return None
     try:
-        from physiorag.embeddings.text_encoder import TextEncoder
+        from physiorag.embeddings.text_factory import build_query_encoder
 
-        return TextEncoder(
-            model_name=str(emb.get("text_encoder", "sentence-transformers/all-MiniLM-L6-v2")),
-            device=str(emb.get("device", "cpu")),
-            embedding_dim=int(emb.get("text_embedding_dim", 384)),
-        )
+        return build_query_encoder(config)
     except Exception as exc:  # pragma: no cover - depends on local model cache
         detail = f"{type(exc).__name__}: {exc}"
         if strict:
@@ -147,7 +155,11 @@ def run_ingest(
     source = _resolve_source(dataset, cfg)
     processor = _build_processor(dataset, modality, cfg)
     encoder = build_encoder(cfg)
-    if text_encoder is None:
+    # signal_aligned retrieval (e.g. ECG/MERL) indexes the signal vector and
+    # embeds queries with the matched text tower at query time only. There is no
+    # separate text index vector to write, so skip the text encoder at ingest.
+    mode = str(cfg.get("retrieval", {}).get("mode", "hybrid_text"))
+    if text_encoder is None and mode != "signal_aligned":
         text_encoder = _maybe_build_text_encoder(cfg, strict=strict_mode)
     array_dir = Path(cfg.get("storage", {}).get("array_dir", "data/processed/arrays"))
     arrays = ArrayStore(array_dir)
