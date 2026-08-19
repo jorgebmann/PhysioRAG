@@ -35,7 +35,7 @@ ingestion:
   max_epochs_per_record: 20  # cap epochs per record to keep the demo bounded
 
 embeddings:
-  encoder: baseline_cnn  # baseline_cnn (only signal encoder implemented today)
+  encoder: baseline_cnn  # baseline_cnn | merl (ECG dual-encoder; see configs/ecg_merl.yaml)
   embedding_dim: 128
   device: cpu
   batch_size: 16
@@ -62,6 +62,9 @@ storage:
 
 retrieval:
   top_k: 5
+  # hybrid_text (Phase A: MiniLM text vector + BM25) | signal_aligned (Phase B:
+  # matched dual-encoder text tower -> waveform-vector NN, e.g. ECG/MERL).
+  mode: hybrid_text
 
 synthesis:
   backend: ollama  # ollama (only synthesis backend implemented today)

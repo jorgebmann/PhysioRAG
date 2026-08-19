@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -39,13 +38,9 @@ def _build_text_encoder(config: dict[str, Any], *, strict: bool) -> Any | None:
     if not emb.get("text_encoder_enabled", True):
         return None
     try:
-        from physiorag.embeddings.text_encoder import TextEncoder
+        from physiorag.embeddings.text_factory import build_query_encoder
 
-        encoder = TextEncoder(
-            model_name=str(emb.get("text_encoder", "sentence-transformers/all-MiniLM-L6-v2")),
-            device=str(emb.get("device", "cpu")),
-            embedding_dim=int(emb.get("text_embedding_dim", 384)),
-        )
+        encoder = build_query_encoder(config)
         encoder.encode_one("warmup")  # force model load now so /search is fast
         return encoder
     except Exception as exc:  # pragma: no cover - depends on local model cache
@@ -94,7 +89,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     text_encoder = _build_text_encoder(config, strict=strict)
     _state["text_encoder"] = text_encoder
     _state["llm"] = _build_llm(config, strict=strict)
-    _state["retriever"] = Retriever(store, text_encoder=text_encoder)
+    mode = str(config.get("retrieval", {}).get("mode", "hybrid_text"))
+    _state["retriever"] = Retriever(store, text_encoder=text_encoder, mode=mode)
     try:
         yield
     finally:
@@ -292,26 +288,14 @@ def get_waveform(
 
 
 def _render_png(signal: np.ndarray, channels: list[str], fs: float, record: Any) -> bytes:
-    import matplotlib
+    from physiorag.plotting import render_waveform_png
 
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    n_ch = signal.shape[0]
-    t = np.arange(signal.shape[1]) / fs
-    fig, axes = plt.subplots(n_ch, 1, figsize=(9, 2.2 * n_ch), sharex=True, squeeze=False)
-    for i in range(n_ch):
-        ax = axes[i][0]
-        ax.plot(t, signal[i], linewidth=0.9)
-        ax.set_ylabel(channels[i])
-        ax.grid(True, alpha=0.3)
-    axes[-1][0].set_xlabel("time (s)")
-    fig.suptitle(f"{record.epoch_id} — {record.modality}")
-    fig.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=110)
-    plt.close(fig)
-    return buf.getvalue()
+    return render_waveform_png(
+        signal,
+        channels=channels,
+        sample_rate_hz=fs,
+        title=f"{record.epoch_id} — {record.modality}",
+    )
 
 
 # Demo search widget (static HTML/JS). Mounted last so it never shadows the

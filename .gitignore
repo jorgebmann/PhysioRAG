@@ -223,3 +223,10 @@ data/interim/
 data/processed/
 *.npy
 *.npz
+
+# Local model weights (e.g. MERL '*_ckpt.pth' for the ECG dual-encoder track).
+# Distributed under their own licenses; never commit them.
+data/models/
+*.pth
+*.pt
+*.ckpt
