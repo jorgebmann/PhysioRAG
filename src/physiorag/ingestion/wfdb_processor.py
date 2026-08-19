@@ -15,13 +15,17 @@ import numpy as np
 
 from physiorag.ingestion.base import WaveformEpoch, WaveformProcessor
 
-# Signal-name substrings (case-insensitive) preferred per modality.
+# Signal-name substrings (case-insensitive) preferred per modality. Ventilator
+# is restricted to true airway pressure / flow channels; arterial (abp/art),
+# impedance respiration (resp), and generic "pressure" are intentionally absent
+# so we never index a blood-pressure trace as if it were a ventilator waveform.
 MODALITY_CHANNELS: dict[str, list[str]] = {
-    "ventilator": ["paw", "awp", "airway", "resp", "flow", "pressure", "abp", "art"],
+    "ventilator": ["paw", "awp", "airway", "flow"],
     "spo2": ["pleth", "spo2", "ppg"],
     "ecg": ["ecg", " ii", "ii", "iii", " i", "v1", "v2", "v5", "avr", "avl", "avf", "mcl"],
 }
 # Fallbacks used when no modality-specific channel is present in a record.
+# Ventilator deliberately does NOT fall back (see _select_channels).
 FALLBACK_CHANNELS = ["pleth", "abp", "art", "ii"]
 
 
@@ -105,11 +109,12 @@ class WfdbWaveformProcessor(WaveformProcessor):
                     continue
                 signal = signal.T  # (n_ch, win)
                 chan_names = list(getattr(rec, "sig_name", None) or [sig_name[i] for i in channels])
+                display_channels = self._display_channels(chan_names)
                 start_time_s = float(sampfrom / fs)
                 text = self._describe(
                     record_id=record_id,
                     subject=subject,
-                    channels=chan_names,
+                    channels=display_channels,
                     start_time_s=start_time_s,
                     fallback=fallback,
                 )
@@ -121,10 +126,15 @@ class WfdbWaveformProcessor(WaveformProcessor):
                     signal=signal,
                     metadata={
                         "subject": subject,
-                        "channels": chan_names,
+                        "channels": display_channels,
+                        "source_channels": chan_names,
                         "native_fs_hz": fs,
                         "database": "mimic4wdb",
                         "channel_fallback": fallback,
+                        # Continuous ICU waveform + generated prose is a WEAK pair
+                        # (settings/description, not a morphology caption). Never
+                        # promoted into contrastive training. See docs/VENT_RETRIEVAL.md.
+                        "pairing_tier": "weak",
                         "text": text,
                     },
                 )
@@ -167,6 +177,11 @@ class WfdbWaveformProcessor(WaveformProcessor):
         wanted = MODALITY_CHANNELS.get(self.modality, [])
         indices = self._match(lowered, wanted)
         fallback = False
+        # Ventilator retrieval must be real airway pressure/flow. A record with
+        # no Paw/Flow-like channel is skipped rather than indexing an arterial
+        # or impedance trace under the ventilator modality.
+        if not indices and self.modality == "ventilator":
+            return [], False
         if not indices:
             indices = self._match(lowered, FALLBACK_CHANNELS)
             fallback = True
@@ -174,6 +189,26 @@ class WfdbWaveformProcessor(WaveformProcessor):
             indices = list(range(min(self.max_channels, len(sig_name))))
             fallback = True
         return indices[: self.max_channels], fallback
+
+    def _display_channels(self, channels: Sequence[str]) -> list[str]:
+        """Relabel recognized ventilator pressure/flow channels to Paw/Flow.
+
+        Only fires for the ventilator modality and only on names that clearly
+        match a pressure or flow keyword; anything else keeps its native name so
+        clinical channels are never silently mislabeled.
+        """
+        if self.modality != "ventilator":
+            return list(channels)
+        out: list[str] = []
+        for name in channels:
+            low = name.lower()
+            if any(k in low for k in ("paw", "awp", "airway", "pressure")):
+                out.append("Paw")
+            elif "flow" in low:
+                out.append("Flow")
+            else:
+                out.append(name)
+        return out
 
     @staticmethod
     def _match(lowered: Sequence[str], wanted: Sequence[str]) -> list[int]:

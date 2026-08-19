@@ -131,6 +131,47 @@ Type a natural-language query (or click one of the example chips), see the
 matched waveform epochs rendered as plots alongside the LLM-synthesized,
 citation-grounded answer. Great for a quick screen-recorded walkthrough.
 
+## 🫁 Ventilator retrieval (Phase C)
+
+The synthetic ventilator demo covers labeled asynchrony scenarios (double
+triggering, air trapping, ineffective effort, flow starvation, delayed cycling,
+reverse triggering, low compliance, normal) as 2-channel `Paw`/`Flow` windows
+with **bilingual (EN + DE) templated captions** and structured metadata
+(`asynchrony_type`, `vent_mode`, `peep_cmh2o`, `diagnosis`, `finding`,
+`pairing_tier`).
+
+Retrieval is `hybrid_text`: a vent-only German→English glossary (applied only for
+ventilator / unfiltered queries) rewrites the query, MiniLM searches the caption
+text vector, and BM25 scores the caption plus promoted metadata properties
+(in-memory: reciprocal rank fusion of dense + keyword). Captions store real
+umlauts so untranslated German still matches. This is caption/metadata retrieval,
+**not** CLIP-style text→signal — see [`docs/VENT_RETRIEVAL.md`](docs/VENT_RETRIEVAL.md)
+for the pairing tiers and why ICU notes are never used as captions.
+
+```bash
+# Re-create the demo collection (new searchable metadata properties) and ingest:
+python scripts/ingest_waveforms.py --dataset mimic_demo --modality ventilator --reset-collection
+
+# German Dräger-style query (glossary rewrites it to English under the hood):
+curl -X POST http://127.0.0.1:8000/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"Double Triggering unter Druckunterstützung","modality":"ventilator","top_k":3}'
+
+# Each hit carries a metadata block (asynchrony_type, vent_mode, channels, …)
+# next to its Paw/Flow plot_url.
+```
+
+Track retrieval quality with a frozen EN/DE query set (labeled Recall@k vs
+chance; hybrid / MiniLM-only / keyword-only). Queries are split into a "caption"
+subset and a harder "paraphrase" subset (which avoids the caption's own words),
+and the corpus carries unlabeled distractor epochs so recall is not trivially 1:
+
+```bash
+python scripts/eval_vent_retrieval.py --variants 3
+# writes data/processed/vent_recall.json (with a by_subset block)
+# add --backend weaviate to score on the live product fusion
+```
+
 ## 🫀 ECG semantic search (Phase B — reused MERL dual-encoder)
 
 PhysioRAG can search **12-lead ECG** by natural language using an open ECG–language
@@ -196,8 +237,8 @@ curl -X POST http://127.0.0.1:8000/search \
 
 `signal_aligned` search applies the same PTB-XL DE/SV→EN glossary as eval when
 the query contains those tokens (`vorhofflimmern` → `atrial fibrillation`).
-English queries are left unchanged. The ventilator `hybrid_text` path is not
-rewritten.
+English queries are left unchanged. This ECG glossary is separate from the
+ventilator vent-only glossary; the two never share vocabulary.
 
 ### 5. Report Recall@k vs the baseline
 

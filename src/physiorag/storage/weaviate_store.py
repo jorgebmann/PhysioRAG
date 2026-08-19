@@ -20,6 +20,19 @@ DEFAULT_COLLECTION = "WaveformEpochV2"
 WAVEFORM_VECTOR = "waveform"
 TEXT_VECTOR = "text"
 
+# Structured metadata promoted to first-class TEXT properties so BM25 / hybrid
+# search can match on them (not just the free-text caption). Kept in sync with
+# ``vent_captions.build_metadata`` and the ventilator demo.
+METADATA_TEXT_PROPERTIES: tuple[str, ...] = (
+    "asynchrony_type",
+    "diagnosis",
+    "finding",
+    "vent_mode",
+    "label",
+)
+# Properties BM25 scores against for a natural-language query.
+BM25_QUERY_PROPERTIES: list[str] = ["text", *METADATA_TEXT_PROPERTIES]
+
 
 def _as_vector(embedding: QuantizedEmbedding | np.ndarray) -> list[float]:
     if isinstance(embedding, QuantizedEmbedding):
@@ -99,6 +112,7 @@ class WeaviateVectorStore(VectorStore):
         from weaviate.classes.config import Configure, DataType, Property
 
         if self._client.collections.exists(self.collection_name):
+            self._verify_searchable_properties()
             return
         self._client.collections.create(
             name=self.collection_name,
@@ -108,6 +122,10 @@ class WeaviateVectorStore(VectorStore):
                 Property(name="modality", data_type=DataType.TEXT),
                 Property(name="array_ref", data_type=DataType.TEXT),
                 Property(name="text", data_type=DataType.TEXT),
+                *[
+                    Property(name=name, data_type=DataType.TEXT)
+                    for name in METADATA_TEXT_PROPERTIES
+                ],
                 Property(name="metadata_json", data_type=DataType.TEXT),
                 Property(name="start_time_s", data_type=DataType.NUMBER),
             ],
@@ -116,6 +134,27 @@ class WeaviateVectorStore(VectorStore):
                 Configure.Vectors.self_provided(name=TEXT_VECTOR),
             ],
         )
+
+    def _verify_searchable_properties(self) -> None:
+        """Fail loudly if an existing collection predates the promoted BM25 props.
+
+        Weaviate ignores property additions once a collection exists, so a
+        collection created before Phase C would silently lack the searchable
+        metadata fields and BM25 queries against them would return nothing (or
+        error). Point the operator at ``--reset-collection`` instead.
+        """
+        try:
+            config = self.collection.config.get()
+            existing = {p.name for p in (config.properties or [])}
+        except Exception:
+            return  # introspection unavailable; do not block startup
+        missing = [name for name in METADATA_TEXT_PROPERTIES if name not in existing]
+        if missing:
+            raise RuntimeError(
+                f"Weaviate collection '{self.collection_name}' is missing searchable "
+                f"metadata properties {missing}. It predates the Phase C BM25 "
+                "metadata fields; re-ingest with --reset-collection to rebuild it."
+            )
 
     @property
     def collection(self) -> Any:
@@ -140,17 +179,19 @@ class WeaviateVectorStore(VectorStore):
                         )
                     vectors[TEXT_VECTOR] = text_vec.tolist()
 
+                meta = record.metadata or {}
                 props = {
                     "epoch_id": record.epoch_id,
                     "record_id": record.record_id,
                     "modality": record.modality,
                     "array_ref": record.array_ref,
                     "text": record.text or "",
-                    "metadata_json": json.dumps(record.metadata or {}),
-                    "start_time_s": float(record.metadata.get("start_time_s", 0.0))
-                    if record.metadata
-                    else 0.0,
+                    "metadata_json": json.dumps(meta),
+                    "start_time_s": float(meta.get("start_time_s", 0.0)),
                 }
+                for name in METADATA_TEXT_PROPERTIES:
+                    value = meta.get(name)
+                    props[name] = str(value) if value is not None else ""
                 batch.add_object(
                     properties=props,
                     vector=vectors,
@@ -201,7 +242,8 @@ class WeaviateVectorStore(VectorStore):
         query_embedding: np.ndarray | None = None,
     ) -> list[StoredRecord]:
         """Hybrid BM25 + text-vector search when a query vector is provided,
-        otherwise pure BM25 over the ``text`` property.
+        otherwise pure BM25. Both score over ``BM25_QUERY_PROPERTIES`` (the
+        caption ``text`` plus the promoted metadata fields), not ``text`` alone.
         """
         from weaviate.classes.query import MetadataQuery
 
@@ -209,7 +251,7 @@ class WeaviateVectorStore(VectorStore):
         if query_embedding is None:
             result = self.collection.query.bm25(
                 query=query,
-                query_properties=["text"],
+                query_properties=BM25_QUERY_PROPERTIES,
                 limit=top_k,
                 filters=weaviate_filter,
                 return_metadata=MetadataQuery(score=True),
@@ -219,7 +261,7 @@ class WeaviateVectorStore(VectorStore):
                 query=query,
                 vector=np.asarray(query_embedding, dtype=np.float32).reshape(-1).tolist(),
                 target_vector=TEXT_VECTOR,
-                query_properties=["text"],
+                query_properties=BM25_QUERY_PROPERTIES,
                 limit=top_k,
                 filters=weaviate_filter,
                 return_metadata=MetadataQuery(score=True, distance=True),

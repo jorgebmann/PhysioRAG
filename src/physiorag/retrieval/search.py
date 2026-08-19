@@ -72,13 +72,27 @@ class Retriever:
             query_embedding = self._text_encoder.encode_one(apply_ptbxl_glossary(query))
             return self._store.search(query_embedding, top_k=top_k, filters=filters)
 
+        from physiorag.ingestion.vent_captions import apply_vent_glossary
+
+        # German UI queries (e.g. "Beatmungsgerät", "Druckanstieg") are rewritten
+        # to English so both the MiniLM text vector and BM25 line up with the
+        # English half of the bilingual captions/metadata. English queries and
+        # non-vent vocabulary (incl. PTB-XL ECG German) pass through unchanged.
+        # The vent glossary is only applied for ventilator (or unfiltered "all
+        # modalities") queries so SpO2/ECG hybrid searches are never rewritten.
+        modality = (filters or {}).get("modality")
+        search_query = (
+            apply_vent_glossary(query)
+            if modality in (None, "", "ventilator")
+            else query
+        )
         query_embedding = None
         if self._text_encoder is not None:
-            query_embedding = self._text_encoder.encode_one(query)
+            query_embedding = self._text_encoder.encode_one(search_query)
         if not hasattr(self._store, "search_text"):
             raise NotImplementedError("Store does not support text search")
         return self._store.search_text(  # type: ignore[attr-defined]
-            query,
+            search_query,
             top_k=top_k,
             filters=filters,
             query_embedding=query_embedding,

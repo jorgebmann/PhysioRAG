@@ -33,6 +33,25 @@ def _write_record(root: Path) -> None:
     )
 
 
+def _write_abp_only_record(root: Path) -> None:
+    rec_dir = root / "waves" / "p200" / "p20000001" / "90000001"
+    rec_dir.mkdir(parents=True, exist_ok=True)
+    fs = 250
+    seconds = 30
+    n = fs * seconds
+    t = np.arange(n) / fs
+    abp = (90 + 20 * np.sin(2 * np.pi * 1.1 * t)).astype(np.float64)
+    wfdb.wrsamp(
+        "90000001",
+        fs=fs,
+        units=["mmHg"],
+        sig_name=["ABP"],
+        p_signal=abp.reshape(-1, 1),
+        fmt=["16"],
+        write_dir=str(rec_dir),
+    )
+
+
 def test_wfdb_processor_streams_epochs(tmp_path: Path) -> None:
     _write_record(tmp_path)
     proc = WfdbWaveformProcessor(
@@ -51,5 +70,21 @@ def test_wfdb_processor_streams_epochs(tmp_path: Path) -> None:
     assert first.signal.shape == (2, 1250)  # 2 channels, 10s @ 125Hz
     assert first.sample_rate_hz == 125.0
     assert "Paw" in (first.metadata.get("text") or "")
+    assert first.metadata["channels"] == ["Paw", "Flow"]
+    assert first.metadata["pairing_tier"] == "weak"
     # z-normalized -> near-zero mean per channel
     assert np.allclose(first.signal.mean(axis=1), 0.0, atol=1e-4)
+
+
+def test_wfdb_ventilator_skips_records_without_paw_flow(tmp_path: Path) -> None:
+    _write_abp_only_record(tmp_path)
+    proc = WfdbWaveformProcessor(
+        modality="ventilator",
+        window_seconds=10.0,
+        target_sample_rate_hz=125.0,
+        max_epochs_per_record=2,
+    )
+    # The record is discoverable, but an ABP-only record is not a ventilator
+    # source, so no epochs are emitted (no arterial-as-ventilator fallback).
+    assert len(proc.find_records(tmp_path)) == 1
+    assert list(proc.iter_epochs(tmp_path)) == []
