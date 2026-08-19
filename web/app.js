@@ -1,11 +1,15 @@
 const EXAMPLE_QUERIES = {
   "": [
     "Patienten mit ARDS, die spontan gegen das Beatmungsgerät atmen und dadurch einen Druckanstieg verursachen",
+    "Double Triggering unter Druckunterstützung",
     "Abfall der Sauerstoffsättigung (SpO2) unter 90 Prozent",
     "COPD-Patient mit Air Trapping und steigendem endexspiratorischem Druck",
   ],
   ventilator: [
     "Patienten mit ARDS, die spontan gegen das Beatmungsgerät atmen und dadurch einen Druckanstieg verursachen",
+    "Double Triggering unter Druckunterstützung",
+    "Frustrane Triggerung mit verpasstem Trigger",
+    "Flussmangel und Lufthunger bei ARDS",
     "COPD-Patient mit Air Trapping und steigendem endexspiratorischem Druck",
   ],
   spo2: ["Abfall der Sauerstoffsättigung (SpO2) unter 90 Prozent"],
@@ -104,6 +108,39 @@ function renderAnswer(answer, sources) {
   }
 }
 
+const METADATA_LABELS = {
+  asynchrony_type: "asynchrony",
+  diagnosis: "dx",
+  vent_mode: "mode",
+  peep_cmh2o: "PEEP",
+  finding: "finding",
+  pairing_tier: "pairing",
+};
+
+function renderMetadataTags(metadata) {
+  if (!metadata || typeof metadata !== "object") return null;
+  const wrap = document.createElement("div");
+  wrap.className = "hit__tags";
+  let count = 0;
+  for (const [key, label] of Object.entries(METADATA_LABELS)) {
+    const value = metadata[key];
+    if (value === undefined || value === null || value === "none") continue;
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = `${label}: ${value}`;
+    wrap.appendChild(tag);
+    count += 1;
+  }
+  if (Array.isArray(metadata.channels) && metadata.channels.length) {
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = `channels: ${metadata.channels.join("/")}`;
+    wrap.appendChild(tag);
+    count += 1;
+  }
+  return count ? wrap : null;
+}
+
 function renderHits(hits) {
   resultsEl.innerHTML = "";
   if (!hits.length) {
@@ -144,6 +181,11 @@ function renderHits(hits) {
     idLine.className = "hit__id";
     idLine.textContent = `${hit.record_id} · ${hit.epoch_id}`;
     body.appendChild(idLine);
+
+    const tags = renderMetadataTags(hit.metadata);
+    if (tags) {
+      body.appendChild(tags);
+    }
 
     if (hit.text) {
       const text = document.createElement("p");

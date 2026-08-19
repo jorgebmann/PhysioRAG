@@ -30,7 +30,15 @@ def _seed(store: Any, arrays: Any) -> None:
                 modality="ventilator",
                 embedding=np.ones(8, dtype=np.float32),
                 array_ref=ref,
-                metadata={"start_time_s": 0.0, "sample_rate_hz": 125.0, "channels": ["Paw", "Flow"]},
+                metadata={
+                    "start_time_s": 0.0,
+                    "sample_rate_hz": 125.0,
+                    "channels": ["Paw", "Flow"],
+                    "asynchrony_type": "double_triggering",
+                    "diagnosis": "ARDS",
+                    "vent_mode": "PSV",
+                    "pairing_tier": "medium",
+                },
                 text="ARDS pressure spike asynchrony",
             )
         ]
@@ -56,6 +64,9 @@ def test_search_and_plot(monkeypatch, tmp_path: Path) -> None:
         top = body["hits"][0]
         assert top["epoch_id"] == "demo-ards-001_0"
         assert top["plot_url"] == "/waveforms/demo-ards-001_0?format=png"
+        assert top["metadata"]["asynchrony_type"] == "double_triggering"
+        assert top["metadata"]["channels"] == ["Paw", "Flow"]
+        assert top["metadata"]["vent_mode"] == "PSV"
         assert body["answer"] is None  # synthesis disabled
 
         j = client.get("/waveforms/demo-ards-001_0", params={"format": "json"})

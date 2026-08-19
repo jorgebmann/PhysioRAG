@@ -123,6 +123,25 @@ class SearchHit(BaseModel):
     array_ref: str | None = None
     text: str | None = None
     plot_url: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# Curated metadata surfaced on each hit for the demo UI (kept small on purpose;
+# full metadata stays in the store's metadata_json).
+_HIT_METADATA_FIELDS: tuple[str, ...] = (
+    "asynchrony_type",
+    "diagnosis",
+    "vent_mode",
+    "peep_cmh2o",
+    "finding",
+    "channels",
+    "pairing_tier",
+)
+
+
+def _hit_metadata(record: Any) -> dict[str, Any]:
+    meta = record.metadata or {}
+    return {k: meta[k] for k in _HIT_METADATA_FIELDS if meta.get(k) is not None}
 
 
 class SearchResponse(BaseModel):
@@ -185,7 +204,12 @@ def health() -> dict[str, Any]:
 
 @app.post("/search", response_model=SearchResponse)
 def search(request: SearchRequest) -> SearchResponse:
-    """Cross-modal search: NL query -> text vector (hybrid) over waveform epochs."""
+    """Natural-language search over waveform epochs.
+
+    The ventilator path is a caption/metadata hybrid (MiniLM over bilingual
+    captions + BM25/keyword over promoted metadata), not CLIP-style text->signal
+    alignment. The ECG ``signal_aligned`` path is the true cross-modal one.
+    """
     retriever = _state.get("retriever")
     if retriever is None:
         raise HTTPException(status_code=503, detail="Retriever not initialized")
@@ -209,6 +233,7 @@ def search(request: SearchRequest) -> SearchResponse:
             array_ref=r.array_ref,
             text=r.text,
             plot_url=f"/waveforms/{r.epoch_id}?format=png",
+            metadata=_hit_metadata(r),
         )
         for r in records
     ]
