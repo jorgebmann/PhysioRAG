@@ -1,0 +1,71 @@
+# PhysioRAG public demo configuration (clone -> search in minutes).
+#
+# This config powers `python scripts/serve_demo.py`: a single-process, offline
+# quickstart that needs no Docker, no PhysioNet credentials, and no Ollama.
+# It ingests the fully synthetic ventilator scenarios into an in-memory store
+# on startup, then serves the search UI at http://127.0.0.1:8000/.
+#
+# The full local stack (Weaviate + Ollama + real pyturboquant) still uses
+# configs/default.yaml and scripts/smoke_demo.py.
+
+runtime:
+  # Soft-degrade: if the text encoder or Ollama is missing, keep serving
+  # keyword search + plots instead of failing. Never strict for the demo.
+  strict: false
+  # Ingest the synthetic mimic_demo scenarios into the in-memory store when the
+  # API starts, so `serve_demo.py` is a single command (only honored for the
+  # in-memory backend; default.yaml leaves this off so tests/Weaviate are safe).
+  auto_ingest_demo: true
+
+data:
+  raw_dir: data/raw
+  interim_dir: data/interim
+  processed_dir: data/processed
+  demo_dir: data/demo
+
+ingestion:
+  dataset: mimic_demo  # synthetic, no credentials required
+  modality: ventilator
+  window_seconds: 10.0
+  target_sample_rate_hz: 125
+  overlap_seconds: 0.0
+  max_epochs_per_record: 20
+
+embeddings:
+  encoder: baseline_cnn
+  embedding_dim: 128
+  device: cpu
+  batch_size: 16
+  # MiniLM downloads to your local Hugging Face cache on first run (~90 MB).
+  # If it can't load, the demo degrades to BM25/keyword search over captions.
+  text_encoder_enabled: true
+  text_encoder: sentence-transformers/all-MiniLM-L6-v2
+  text_embedding_dim: 384
+
+quantization:
+  # Without the optional `.[quant]` extra this falls back to a float16 stub,
+  # which is fine for the in-memory demo. Install `.[quant]` for real TurboQuant.
+  enabled: true
+  bits: 8
+
+storage:
+  backend: memory  # no Weaviate needed for the demo
+  array_dir: data/processed/arrays
+  collection: WaveformEpochDemo
+
+retrieval:
+  top_k: 5
+  mode: hybrid_text
+
+synthesis:
+  # If Ollama is running with llama3.1, /search also returns a grounded answer.
+  # If not, search + plots still work (strict is false, so no 503).
+  backend: ollama
+  model: llama3.1
+  base_url: http://127.0.0.1:11434
+  enabled: true
+  temperature: 0.2
+
+api:
+  host: 127.0.0.1
+  port: 8000

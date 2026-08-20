@@ -77,6 +77,40 @@ def _build_llm(config: dict[str, Any], *, strict: bool) -> Any | None:
     return llm
 
 
+def _maybe_auto_ingest_demo(config: dict[str, Any], store: Any, text_encoder: Any | None) -> None:
+    """Populate an in-memory store with the synthetic demo on startup.
+
+    Enables the single-command public quickstart (`scripts/serve_demo.py`): the
+    in-memory store is process-local, so without this the freshly served app
+    would have nothing to search. Only runs for the in-memory backend and only
+    when ``runtime.auto_ingest_demo`` is set, so default.yaml / Weaviate and the
+    unit tests are unaffected.
+    """
+    runtime = config.get("runtime", {})
+    if not runtime.get("auto_ingest_demo", False):
+        return
+    if config.get("storage", {}).get("backend", "memory") != "memory":
+        return
+    from physiorag.pipeline.ingest import run_ingest
+
+    ingestion = config.get("ingestion", {})
+    dataset = str(ingestion.get("dataset", "mimic_demo"))
+    modality = str(ingestion.get("modality", "ventilator"))
+    result = run_ingest(
+        dataset=dataset,
+        modality=modality,
+        config=config,
+        store=store,
+        text_encoder=text_encoder,
+        strict=False,
+    )
+    print(
+        f"[api] auto-ingested demo: dataset={dataset} modality={modality} "
+        f"epochs={result.get('epochs_written')} "
+        f"text_vectors={result.get('text_vectors_written')}"
+    )
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     config = load_config()
@@ -89,6 +123,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     text_encoder = _build_text_encoder(config, strict=strict)
     _state["text_encoder"] = text_encoder
     _state["llm"] = _build_llm(config, strict=strict)
+    _maybe_auto_ingest_demo(config, store, text_encoder)
     mode = str(config.get("retrieval", {}).get("mode", "hybrid_text"))
     _state["retriever"] = Retriever(store, text_encoder=text_encoder, mode=mode)
     try:
