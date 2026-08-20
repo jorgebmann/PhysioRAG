@@ -133,7 +133,7 @@ class WfdbWaveformProcessor(WaveformProcessor):
                         "channel_fallback": fallback,
                         # Continuous ICU waveform + generated prose is a WEAK pair
                         # (settings/description, not a morphology caption). Never
-                        # promoted into contrastive training. See docs/VENT_RETRIEVAL.md.
+                        # promoted into contrastive training. ICU notes are never used as CLIP pairs.
                         "pairing_tier": "weak",
                         "text": text,
                     },

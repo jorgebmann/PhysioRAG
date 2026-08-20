@@ -59,8 +59,7 @@ shared search space so signals and text are searchable together. It ships:
 - a **reused open ECG–language dual-encoder** ([MERL](https://github.com/cheliu-computation/MERL-ICML2024))
   for CLIP-style ECG search (see [ECG semantic search](#-ecg-semantic-search-phase-b--reused-merl-dual-encoder)).
 
-Further modality-specific models (*PaPaGei*, *Chronos*) are on the roadmap
-(see [`PROJECT_BRIEF_PhysioRAG.md`](PROJECT_BRIEF_PhysioRAG.md), Phase B+).
+Further modality-specific models (*PaPaGei*, *Chronos*) remain on the roadmap.
 
 > **Example:** *"Find ventilator pressure curves showing ARDS patients breathing
 > spontaneously against the machine."* → returns the exact ~10-second waveform
