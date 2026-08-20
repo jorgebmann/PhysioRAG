@@ -224,8 +224,8 @@ data/processed/
 *.npy
 *.npz
 
-# Internal go-to-market / strategy docs — not part of the public product repo.
-docs/GO-TO-MARKET_*.md
+# Internal documentation (GTM, project briefs, retrieval notes) — kept locally only.
+docs/
 
 # Demo source video (large; the README embeds assets/physiorag_demo.gif instead).
 *.mov

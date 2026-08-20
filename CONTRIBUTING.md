@@ -13,8 +13,8 @@ Bug reports, reproducible benchmarks, and focused pull requests are all welcome.
   air-gapped.
 - **Be honest about capabilities.** The ventilator track is caption/metadata
   hybrid retrieval, not CLIP-style text→signal alignment; the ECG (MERL) track
-  is the true cross-modal one. Please keep docs and claims precise (see
-  [`docs/VENT_RETRIEVAL.md`](docs/VENT_RETRIEVAL.md)).
+  is the true cross-modal one. Synthetic ventilator captions are templated from
+  labels (`pairing_tier: medium`); ICU notes are never used as caption pairs.
 
 ## Getting set up
 

@@ -149,9 +149,11 @@ for ventilator / unfiltered queries) rewrites the query, MiniLM searches the
 caption text vector, and BM25 scores the caption plus promoted metadata
 properties (reciprocal rank fusion of dense + keyword). Captions store real
 umlauts so untranslated German still matches. **This is caption/metadata
-retrieval, not CLIP-style text→signal alignment** — see
-[`docs/VENT_RETRIEVAL.md`](docs/VENT_RETRIEVAL.md) for the pairing tiers and why
-ICU notes are never used as captions.
+retrieval, not CLIP-style text→signal alignment.** Each epoch carries a
+`pairing_tier` tag: synthetic demo captions are **medium** (templated from labels,
+not free-text morphology); real WFDB windows get **weak** auto-generated prose.
+ICU free-text notes are **never** used as captions — they rarely pin an event to
+a 10-second window.
 
 ```bash
 # German Dräger-style query (glossary rewrites it to English under the hood):
